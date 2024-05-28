@@ -12,6 +12,7 @@ module Cardano.Node.Parsers
   ) where
 
 import           Cardano.Logging.Types
+import           Cardano.Node.Configuration.LedgerDB
 import           Cardano.Node.Configuration.NodeAddress (File (..),
                    NodeHostIPv4Address (NodeHostIPv4Address),
                    NodeHostIPv6Address (NodeHostIPv6Address), PortNumber, SocketPath)
@@ -22,8 +23,10 @@ import           Cardano.Node.Types
 import           Cardano.Prelude (ConvertText (..))
 import           Ouroboros.Consensus.Mempool (MempoolCapacityBytes (..),
                    MempoolCapacityBytesOverride (..))
-import           Ouroboros.Consensus.Storage.LedgerDB.DiskPolicy (NumOfDiskSnapshots (..),
+import           Ouroboros.Consensus.Storage.LedgerDB.Impl.Snapshots (NumOfDiskSnapshots (..),
                    SnapshotInterval (..))
+import           Ouroboros.Consensus.Storage.LedgerDB.V1.Args (FlushFrequency (..),
+                   QueryBatchSize (..))
 
 import           Data.Foldable
 import           Data.Maybe (fromMaybe)
@@ -79,6 +82,9 @@ nodeRunParser = do
   snapshotInterval   <- lastOption parseSnapshotInterval
   maybeMempoolCapacityOverride <- lastOption parseMempoolCapacityOverride
 
+  -- LedgerDB configuration
+  ledgerDBBackend    <- lastOption parseLedgerDBBackend
+
   pure $ PartialNodeConfiguration
            { pncSocketConfig =
                Last . Just $ SocketConfig
@@ -90,8 +96,6 @@ nodeRunParser = do
            , pncTopologyFile = TopologyFile <$> topFp
            , pncDatabaseFile = DbFile <$> dbFp
            , pncDiffusionMode = mempty
-           , pncNumOfDiskSnapshots = numOfDiskSnapshots
-           , pncSnapshotInterval = snapshotInterval
            , pncExperimentalProtocolsEnabled = mempty
            , pncProtocolFiles = Last $ Just ProtocolFilepaths
              { byronCertFile
@@ -113,6 +117,9 @@ nodeRunParser = do
            , pncTraceConfig = mempty
            , pncTraceForwardSocket = traceForwardSocket
            , pncMaybeMempoolCapacityOverride = maybeMempoolCapacityOverride
+           , pncNumOfDiskSnapshots = numOfDiskSnapshots
+           , pncSnapshotInterval = snapshotInterval
+           , pncLedgerDBBackend = ledgerDBBackend
            , pncProtocolIdleTimeout = mempty
            , pncTimeWaitTimeout = mempty
            , pncChainSyncIdleTimeout = mempty
@@ -222,6 +229,86 @@ parseMempoolCapacityOverride = parseOverride <|> parseNoOverride
       flag' NoMempoolCapacityBytesOverride
         (  long "no-mempool-capacity-override"
         <> help "[DEPRECATED: Set it in config file] Don't override mempool capacity"
+        )
+
+parseLedgerDBBackend :: Parser (LedgerDbSelectorFlag Last)
+parseLedgerDBBackend =
+      parseV1InMemory
+        <*> (Last <$> optional (parseFlushFrequency True))
+        <*> (Last <$> optional (parseQueryBatchSize True))
+  <|> parseV2InMemory
+  <|> parseLMDB
+        <*> (Last <$> optional (parseFlushFrequency False))
+        <*> (Last <$> optional (parseQueryBatchSize False))
+        <*> (Last <$> optional parseLmdbPath)
+        <*> optional parseMapSize
+  where
+    parseV1InMemory :: Parser (f FlushFrequency -> f QueryBatchSize -> LedgerDbSelectorFlag f)
+    parseV1InMemory =
+      flag' V1InMemory (  long "v1-utxos-in-memory"
+                     <> internal
+                     <> help "Use the V1 InMemory LedgerDB backend"
+                     )
+
+    parseV2InMemory :: Parser (LedgerDbSelectorFlag f)
+    parseV2InMemory =
+      flag' V2InMemory (  long "utxos-in-memory"
+                     <> help "Use the InMemory LedgerDB backend. \
+                             \ The node uses this backend by default \
+                             \ if none is specified."
+                     )
+
+    parseLMDB :: Parser (f FlushFrequency -> f QueryBatchSize -> f FilePath -> Maybe Gigabytes -> LedgerDbSelectorFlag f)
+    parseLMDB =
+      flag' V1LMDB (  long "utxos-on-disk"
+                 <> help "Use the LMDB ledger DB backend."
+                )
+
+    parseFlushFrequency :: Bool -> Parser FlushFrequency
+    parseFlushFrequency hide = RequestedFlushFrequency <$>
+      option auto (
+          long "utxos-flush-frequency"
+        <> if hide then internal else mempty
+        <> metavar "WORD"
+        <> help "Flush parts of the ledger state to disk after WORD blocks have \
+                \moved into the immutable part of the chain. This should be at \
+                \least 0."
+        )
+
+    parseQueryBatchSize :: Bool -> Parser QueryBatchSize
+    parseQueryBatchSize hide = RequestedQueryBatchSize <$>
+      option auto (
+           long "utxos-query-batch-size"
+        <> if hide then internal else mempty
+        <> metavar "WORD"
+        <> help "When reading large amounts of ledger state data from disk for a \
+                \ledger state query, perform reads in batches of WORD size. This \
+                \should be at least 1."
+        )
+
+    parseMapSize :: Parser Gigabytes
+    parseMapSize =
+      option auto (
+           long "lmdb-mapsize"
+        <> metavar "NR_GIGABYTES"
+        <> help "The maximum database size defined in number of Gigabytes. \
+                \ By default, the \
+                \ mapsize (maximum database size) of the backend \
+                \ is set to 16 Gigabytes. Warning: if the database \
+                \ size exceeds the given mapsize, the node will \
+                \ abort. Therefore, the mapsize should be set to a \
+                \ value high enough to guarantee that the maximum \
+                \ database size will not be reached during the \
+                \ expected node uptime."
+      )
+
+    parseLmdbPath :: Parser FilePath
+    parseLmdbPath =
+      strOption
+        ( long "lmdb-path"
+        <> metavar "FILEPATH"
+        <> help "Directory where the live lmdb is stored."
+        <> completer (bashCompleter "file")
         )
 
 parseDbPath :: Parser FilePath
