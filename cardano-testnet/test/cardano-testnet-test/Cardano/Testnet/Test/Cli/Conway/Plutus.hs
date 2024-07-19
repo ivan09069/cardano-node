@@ -16,6 +16,7 @@ import           Cardano.Testnet
 
 import           Prelude
 
+import           Control.Concurrent (threadDelay)
 import           Control.Monad (void)
 import qualified Data.Text as Text
 import           System.FilePath ((</>))
@@ -41,6 +42,7 @@ import qualified Hedgehog.Extras as H
 -- Certifying YES
 -- Voting NO
 -- Proposing NO
+-- @DISABLE_RETRIES=1 cabal test cardano-testnet-test --test-options '-p "/PlutusV3/"'@
 hprop_plutus_v3 :: Property
 hprop_plutus_v3 = integrationWorkspace "all-plutus-script-purposes" $ \tempAbsBasePath' -> H.runWithDefaultWatchdog_ $ do
   H.note_ SYS.os
@@ -178,5 +180,58 @@ hprop_plutus_v3 = integrationWorkspace "all-plutus-script-purposes" $ \tempAbsBa
     [ "transaction", "submit"
     , "--tx-file", spendScriptUTxOTx
     ]
+
+  liftIO $ threadDelay 10_000_000
+
+  scriptStakeDeRegistrationCertificate
+    <- H.note $ work </> "script-stake-deregistration-certificate"
+
+  -- Create script stake registration certificate
+  createScriptStakeDeregistrationCertificate
+    tempAbsPath
+    anyEra
+    plutusScript
+    0
+    scriptStakeDeRegistrationCertificate
+
+
+  deregScriptUTxOTxBody
+    <- H.note $ work </> "dereg-script-txbody"
+  sccriptUtxos <- findUtxosWithAddress epochStateView sbe $ Text.pack plutusSpendingScriptAddr
+
+  H.note_ $ show sccriptUtxos
+  let newtxout = mconcat [ utxoAddr, "+", show @Int 2_000_000]
+  txin2 <- findLargestUtxoForPaymentKey epochStateView sbe wallet0
+
+  void $ execCli' execConfig
+    [ anyEraToString anyEra, "transaction", "build"
+    , "--change-address", Text.unpack $ paymentKeyInfoAddr wallet1
+    , "--tx-in", Text.unpack $ renderTxIn txin2
+    , "--tx-in-collateral", Text.unpack $ renderTxIn txinCollateral
+    , "--certificate-file", scriptStakeDeRegistrationCertificate
+    , "--certificate-script-file", plutusScript
+    , "--certificate-redeemer-value", "0"
+    , "--witness-override", "2"
+    , "--tx-out", newtxout
+    , "--out-file", deregScriptUTxOTxBody
+    ]
+
+  deregScriptUTxOTx
+    <- H.note $ work </> "dereg-script-tx"
+
+
+  void $ execCli' execConfig
+    [ "transaction", "sign"
+    , "--tx-body-file", deregScriptUTxOTxBody
+    , "--signing-key-file", utxoSKeyFile2
+    , "--signing-key-file", utxoSKeyFile
+    , "--out-file", deregScriptUTxOTx
+    ]
+
+  void $ execCli' execConfig
+    [ "transaction", "submit"
+    , "--tx-file", deregScriptUTxOTx
+    ]
+
   H.success
 

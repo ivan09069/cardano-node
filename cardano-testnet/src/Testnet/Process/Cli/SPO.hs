@@ -7,6 +7,7 @@
 
 module Testnet.Process.Cli.SPO
   ( checkStakeKeyRegistered
+  , createScriptStakeDeregistrationCertificate
   , createScriptStakeRegistrationCertificate
   , createStakeDelegationCertificate
   , createStakeKeyRegistrationCertificate
@@ -215,6 +216,28 @@ createScriptStakeRegistrationCertificate tempAbsP (AnyCardanoEra cEra) scriptFil
       , "--out-file", tempAbsPath' </> outputFp
       ]
       <> extraArgs
+
+createScriptStakeDeregistrationCertificate
+  :: (MonadTest m, MonadCatch m, MonadIO m, HasCallStack)
+  => TmpAbsolutePath
+  -> AnyCardanoEra
+  -> FilePath -- ^ Script file
+  -> Int -- ^ Registration deposit amount used only in Conway
+  -> FilePath -- ^ Output file path
+  -> m ()
+createScriptStakeDeregistrationCertificate tempAbsP (AnyCardanoEra cEra) scriptFile deposit outputFp =
+  GHC.withFrozenCallStack $ do
+    let tempAbsPath' = unTmpAbsPath tempAbsP
+        extraArgs = monoidForEraInEon @ConwayEraOnwards cEra $
+          const ["--key-reg-deposit-amt", show deposit]
+    execCli_ $
+      [ eraToString cEra
+      , "stake-address", "deregistration-certificate"
+      , "--stake-script-file", scriptFile
+      , "--out-file", tempAbsPath' </> outputFp
+      ]
+      <> extraArgs
+
 
 createStakeKeyDeregistrationCertificate
   :: (MonadTest m, MonadCatch m, MonadIO m, HasCallStack)
