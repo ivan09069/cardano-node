@@ -251,7 +251,7 @@ hprop_plutus_v3 = integrationWorkspace "all-plutus-script-purposes" $ \tempAbsBa
    -- , "--certificate-redeemer-value", "0"
     , "--certificate-file", scriptStakeDeRegistrationCertificateV2
     , "--certificate-script-file", plutusV2ScriptFp
-    , "--certificate-redeemer-value", "0"
+    , "--certificate-redeemer-value", "42"
     , "--witness-override", "2"
     , "--tx-out", newtxout
     , "--out-file", deregScriptUTxOTxBody
