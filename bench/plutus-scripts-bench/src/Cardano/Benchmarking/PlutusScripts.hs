@@ -14,15 +14,9 @@ module Cardano.Benchmarking.PlutusScripts
     , normalizeModuleName
     ) where
 
-import           Prelude
-
-import           Data.ByteString.Lazy as LBS (ByteString)
-import           Data.List (find)
-import           Data.Text (pack, split)
-import           System.FilePath (takeBaseName)
-
 import           Cardano.Api
 
+import qualified Cardano.Benchmarking.PlutusScripts.AlwaysSucceedsV2 as AlwaysSucceedsV2
 import qualified Cardano.Benchmarking.PlutusScripts.CustomCall as CustomCall
 import qualified Cardano.Benchmarking.PlutusScripts.EcdsaSecp256k1Loop as ECDSA
 import qualified Cardano.Benchmarking.PlutusScripts.HashOntoG2AndAdd as HashG2Add
@@ -30,6 +24,13 @@ import qualified Cardano.Benchmarking.PlutusScripts.Loop2024 as Loop2024
 import qualified Cardano.Benchmarking.PlutusScripts.LoopV3 as LoopV3
 import qualified Cardano.Benchmarking.PlutusScripts.SchnorrSecp256k1Loop as Schnorr
 import           Cardano.Benchmarking.ScriptAPI
+
+import           Prelude
+
+import           Data.ByteString.Lazy as LBS (ByteString)
+import           Data.List (find)
+import           Data.Text (pack, split)
+import           System.FilePath (takeBaseName)
 
 
 getAllScripts :: [PlutusBenchScript]
@@ -40,6 +41,7 @@ getAllScripts =
   , Loop2024.script
   , LoopV3.script
   , Schnorr.script
+  , AlwaysSucceedsV2.script
   ]
 
 listPlutusScripts ::

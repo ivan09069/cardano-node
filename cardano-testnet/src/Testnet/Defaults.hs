@@ -29,6 +29,7 @@ module Testnet.Defaults
   , defaultYamlHardforkViaConfig
   , defaultMainnetTopology
   , plutusV3Script
+  , plutusV2Script
   ) where
 
 import           Cardano.Api (AnyCardanoEra (..), CardanoEra (..), File (..), pshow,
@@ -575,3 +576,7 @@ plutusV3Script :: Text
 plutusV3Script =
   "{ \"type\": \"PlutusScriptV3\", \"description\": \"\", \"cborHex\": \"46450101002499\" }"
 
+-- | Default plutus script that always succeeds
+plutusV2Script :: Text
+plutusV2Script =
+  "{ \"type\": \"PlutusScriptV2\", \"description\": \"\", \"cborHex\": \"49480100002221200101\" }"

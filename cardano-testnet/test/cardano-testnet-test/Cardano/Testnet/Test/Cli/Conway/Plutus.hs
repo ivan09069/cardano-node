@@ -81,12 +81,21 @@ hprop_plutus_v3 = integrationWorkspace "all-plutus-script-purposes" $ \tempAbsBa
   plutusScript <- H.note $ work </> "always-succeeds-script.plutusV3"
   H.writeFile plutusScript $ Text.unpack plutusV3Script
 
+  plutusV2ScriptFp <- H.note $ work </> "always-succeeds-script.plutusV2"
+  H.writeFile plutusV2ScriptFp $ Text.unpack plutusV2Script
+
   let sendAdaToScriptAddressTxBody = work </> "send-ada-to-script-address-tx-body"
 
   plutusSpendingScriptAddr <-
     execCli' execConfig
       [ "address", "build"
       , "--payment-script-file", plutusScript
+      ]
+
+  _plutusV2ScriptAddr <-
+    execCli' execConfig
+      [ "address", "build"
+      , "--payment-script-file", plutusV2ScriptFp
       ]
 
   mintingPolicyId <- filter (/= '\n') <$>
@@ -115,6 +124,16 @@ hprop_plutus_v3 = integrationWorkspace "all-plutus-script-purposes" $ \tempAbsBa
     0
     scriptStakeRegistrationCertificate
 
+  scriptStakeRegistrationCertificateV2
+    <- H.note $ work </> "script-stake-registration-certificateV2"
+
+  createScriptStakeRegistrationCertificate
+    tempAbsPath
+    anyEra
+    plutusV2ScriptFp
+    0
+    scriptStakeRegistrationCertificateV2
+
   -- 1. Put UTxO and datum at Plutus spending script address
   --    Register script stake address
   void $ execCli' execConfig
@@ -141,29 +160,36 @@ hprop_plutus_v3 = integrationWorkspace "all-plutus-script-purposes" $ \tempAbsBa
 
   -- 2. Successfully spend conway spending script
   txinCollateral <- findLargestUtxoForPaymentKey epochStateView sbe wallet1
-  plutusScriptTxIn <- fmap fst . retryUntilJustM epochStateView (WaitForBlocks 3) $
+  _plutusScriptTxIn <- fmap fst . retryUntilJustM epochStateView (WaitForBlocks 3) $
     findLargestUtxoWithAddress epochStateView sbe $ Text.pack plutusSpendingScriptAddr
 
   let spendScriptUTxOTxBody = work </> "spend-script-utxo-tx-body"
       spendScriptUTxOTx = work </> "spend-script-utxo-tx"
-      mintValue = mconcat ["5 ", mintingPolicyId, ".", assetName]
+      _mintValue = mconcat ["5 ", mintingPolicyId, ".", assetName]
       txout = mconcat [ utxoAddr, "+", show @Int 2_000_000
-                      , "+", mintValue
+                    --  , "+", mintValue
                       ]
-
+  txin3 <- findLargestUtxoForPaymentKey epochStateView sbe wallet0
+  ver <- execCli' execConfig ["--version"]
+  H.note_ "Cli version"
+  H.note_ ver
   void $ execCli' execConfig
     [ anyEraToString anyEra, "transaction", "build"
     , "--change-address", Text.unpack $ paymentKeyInfoAddr wallet1
     , "--tx-in-collateral", Text.unpack $ renderTxIn txinCollateral
-    , "--tx-in", Text.unpack $ renderTxIn plutusScriptTxIn
-    , "--tx-in-script-file", plutusScript
-    , "--tx-in-datum-value", "0"
-    , "--tx-in-redeemer-value", "0"
-    , "--mint", mintValue
-    , "--mint-script-file", plutusScript
-    , "--mint-redeemer-value", "0"
-    , "--certificate-file", scriptStakeRegistrationCertificate
-    , "--certificate-script-file", plutusScript
+    , "--tx-in", Text.unpack $ renderTxIn txin3
+  --  , "--tx-in-script-file", plutusScript
+  --  , "--tx-in-datum-value", "0"
+  --  , "--tx-in-redeemer-value", "0"
+  --  , "--mint", mintValue
+  --  , "--mint-script-file", plutusScript
+  --  , "--mint-redeemer-value", "0"
+    -- , "--certificate-file", scriptStakeRegistrationCertificate
+    -- , "--certificate-script-file", plutusScript
+    -- , "--certificate-redeemer-value", "0"
+    -- TODO: Left off here
+    , "--certificate-file", scriptStakeRegistrationCertificateV2
+    , "--certificate-script-file", plutusV2ScriptFp
     , "--certificate-redeemer-value", "0"
     , "--tx-out", txout
     , "--out-file", spendScriptUTxOTxBody
@@ -172,6 +198,7 @@ hprop_plutus_v3 = integrationWorkspace "all-plutus-script-purposes" $ \tempAbsBa
   void $ execCli' execConfig
     [ "transaction", "sign"
     , "--tx-body-file", spendScriptUTxOTxBody
+    , "--signing-key-file", utxoSKeyFile
     , "--signing-key-file", utxoSKeyFile2
     , "--out-file", spendScriptUTxOTx
     ]
@@ -195,21 +222,35 @@ hprop_plutus_v3 = integrationWorkspace "all-plutus-script-purposes" $ \tempAbsBa
     scriptStakeDeRegistrationCertificate
 
 
+  scriptStakeDeRegistrationCertificateV2
+    <- H.note $ work </> "script-stake-deregistration-certificateV2"
+
+  -- Create script stake registration certificate
+  createScriptStakeDeregistrationCertificate
+    tempAbsPath
+    anyEra
+    plutusV2ScriptFp
+    0
+    scriptStakeDeRegistrationCertificateV2
+
   deregScriptUTxOTxBody
     <- H.note $ work </> "dereg-script-txbody"
   sccriptUtxos <- findUtxosWithAddress epochStateView sbe $ Text.pack plutusSpendingScriptAddr
 
   H.note_ $ show sccriptUtxos
   let newtxout = mconcat [ utxoAddr, "+", show @Int 2_000_000]
-  txin2 <- findLargestUtxoForPaymentKey epochStateView sbe wallet0
+  txin2 <- findLargestUtxoForPaymentKey epochStateView sbe wallet1
 
   void $ execCli' execConfig
     [ anyEraToString anyEra, "transaction", "build"
     , "--change-address", Text.unpack $ paymentKeyInfoAddr wallet1
     , "--tx-in", Text.unpack $ renderTxIn txin2
     , "--tx-in-collateral", Text.unpack $ renderTxIn txinCollateral
-    , "--certificate-file", scriptStakeDeRegistrationCertificate
-    , "--certificate-script-file", plutusScript
+   -- , "--certificate-file", scriptStakeDeRegistrationCertificate
+   -- , "--certificate-script-file", plutusScript
+   -- , "--certificate-redeemer-value", "0"
+    , "--certificate-file", scriptStakeDeRegistrationCertificateV2
+    , "--certificate-script-file", plutusV2ScriptFp
     , "--certificate-redeemer-value", "0"
     , "--witness-override", "2"
     , "--tx-out", newtxout
