@@ -16,7 +16,6 @@ import           Cardano.Testnet
 
 import           Prelude
 
-import           Control.Concurrent (threadDelay)
 import           Control.Monad (void)
 import qualified Data.Text as Text
 import           System.FilePath ((</>))
@@ -184,7 +183,7 @@ hprop_plutus_v3 = integrationWorkspace "all-plutus-script-purposes" $ \tempAbsBa
   ver <- execCli' execConfig ["--version"]
   H.note_ "Cli version"
   H.note_ ver
-  void $ execCli' execConfig
+  out <- execCli' execConfig
     [ anyEraToString anyEra, "transaction", "build"
     , "--change-address", Text.unpack $ paymentKeyInfoAddr wallet1
     , "--tx-in-collateral", Text.unpack $ renderTxIn txinCollateral
@@ -208,7 +207,7 @@ hprop_plutus_v3 = integrationWorkspace "all-plutus-script-purposes" $ \tempAbsBa
     , "--tx-out", txout
     , "--out-file", spendScriptUTxOTxBody
     ]
-
+  H.note_ out
   void $ execCli' execConfig
     [ "transaction", "sign"
     , "--tx-body-file", spendScriptUTxOTxBody
@@ -222,7 +221,6 @@ hprop_plutus_v3 = integrationWorkspace "all-plutus-script-purposes" $ \tempAbsBa
     , "--tx-file", spendScriptUTxOTx
     ]
 
-  liftIO $ threadDelay 10_000_000
 
 --  scriptStakeDeRegistrationCertificate
 --    <- H.note $ work </> "script-stake-deregistration-certificate"
