@@ -589,6 +589,12 @@ def all_profile_variants:
      .node.rts_flags_override         = ["-A4m"]
     ) as $rts_A4m
   |
+    ({ extra_desc:                     "RTSflags A32m"
+     , suffix:                         "rtsA32m"
+     }|
+     .node.rts_flags_override         = ["-A32m"]
+    ) as $rts_A32m
+  |
     ({ extra_desc:                     "RTSflags A64m"
      , suffix:                         "rtsA64m"
      }|
@@ -1154,6 +1160,9 @@ def all_profile_variants:
     }
   , $plutus_nomadperf_template *
     { name: "plutus-nomadperf"
+    }
+  , $plutus_nomadperf_template * $rts_A32m *
+    { name: "plutus-rtsA32m-nomadperf"
     }
   , $plutus_nomadperf_template * $plutus_loop2024_counter *
     { name: "plutus24-nomadperf"
