@@ -1170,6 +1170,11 @@ def all_profile_variants:
   , $tracebench_base * $with_rtview *
     { name: "trace-bench-rtview"
     }
+  ## Set cardano-tracer log rotation to 10 sec check interval, ~128kB file size limit, max file age 3 min
+  , $tracebench_base *
+    { name: "trace-bench-fastrotate"
+    , tracer: { fastrotate: true }
+    }
 
   ## Full variants: 120 blocks
   , $tracefull_base *

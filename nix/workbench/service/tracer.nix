@@ -39,6 +39,12 @@ let
           };
         } // optionalAttrs (profile.tracer.withresources or false) {
           resourceFreq = 1000;
+        } // optionalAttrs (profile.tracer.fastrotate or false) {
+          rotation = {
+            rpFrequencySecs = 10;
+            rpLogLimitBytes = 128000;
+            rpMaxAgeMinutes = 3;            # rpMaxAgeMinutes takes precedence over rpMaxAgeHours if both are set in the config file
+          };
         }
       ;
       systemdCompat.options = {
