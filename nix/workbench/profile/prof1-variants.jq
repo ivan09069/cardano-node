@@ -1414,6 +1414,9 @@ def all_profile_variants:
   , $forge_stress_pre_base * $without_tracer *
     { name: "forge-stress-pre-notracer"
     }
+  , $forge_stress_pre_base * $old_tracing *
+    { name: "forge-stress-pre-oldtracing"
+    }
 
   # single forger node, larger blocksize, various flavours
   , $forge_stress_base * $solo * $costmodel_v8_preview *
