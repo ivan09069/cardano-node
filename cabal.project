@@ -78,6 +78,7 @@ source-repository-package
   --sha256: sha256-4+x6GSAJpOUzVuGEuMztdmG5+sSH3uym99YAH6a0Az0=
   subdir:
     cardano-api
+    cardano-api-gen
 
 source-repository-package
   type: git
@@ -86,3 +87,35 @@ source-repository-package
   --sha256: sha256-WSI5zsVON99O9Elm2xqB05KCLHHjgf3Fw6nejdTyMAs=
   subdir:
     cardano-cli
+
+source-repository-package
+  type: git
+  location: https://github.com/IntersectMBO/ouroboros-network
+  tag: 5400a7c039cdf759dfc9a8840f5128ac6dd190a4
+  --sha256: sha256-6xX7XCwiEEaseWvZTww6WhNsZ7JFiQGf/p+clDe/kxw=
+  subdir:
+    cardano-client
+    cardano-ping
+    monoidal-synchronisation
+    network-mux
+    ntp-client
+    ouroboros-network
+    ouroboros-network-api
+    ouroboros-network-framework
+    ouroboros-network-mock
+    ouroboros-network-protocols
+    ouroboros-network-testing
+    quickcheck-monoids
+
+source-repository-package
+  type: git
+  location: https://github.com/IntersectMBO/ouroboros-consensus
+  tag: c1fafb3673186f830e7bd0adbd81175c4feb43ac
+  --sha256: sha256-h8+Yt7F9E8A7DpRKZwiIp5WxW4BayOYl5aw5X8TypOk=
+  subdir:
+    ouroboros-consensus
+    ouroboros-consensus-cardano
+    ouroboros-consensus-protocol
+    ouroboros-consensus-diffusion
+    sop-extras
+    strict-sop-core

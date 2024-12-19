@@ -1,5 +1,4 @@
 {-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE ExplicitNamespaces #-}
@@ -9,7 +8,6 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE PackageImports #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections #-}
 
 {-# LANGUAGE TypeApplications #-}
 
@@ -64,7 +62,7 @@ import           Cardano.Tracing.Config (TraceOptions (..), TraceSelection (..))
 import           Cardano.Tracing.Tracers
 import qualified Ouroboros.Consensus.Config as Consensus
 import           Ouroboros.Consensus.Config.SupportsNode (ConfigSupportsNode (..))
-import           Ouroboros.Consensus.Node (DiskPolicyArgs (..), pattern DoDiskSnapshotChecksum, pattern NoDoDiskSnapshotChecksum, NetworkP2PMode (..),
+import           Ouroboros.Consensus.Node (DiskPolicyArgs (..), NetworkP2PMode (..),
                    NodeDatabasePaths (..), RunNodeArgs (..), StdRunNodeArgs (..))
 import qualified Ouroboros.Consensus.Node as Node (NodeDatabasePaths (..), getChainDB, run)
 import           Ouroboros.Consensus.Node.Genesis
@@ -78,10 +76,9 @@ import qualified Ouroboros.Network.Diffusion.P2P as P2P
 import           Ouroboros.Network.NodeToClient (LocalAddress (..), LocalSocket (..))
 import           Ouroboros.Network.NodeToNode (AcceptedConnectionsLimit (..), ConnectionId,
                    PeerSelectionTargets (..), RemoteAddress)
-import           Ouroboros.Network.PeerSelection.Bootstrap (UseBootstrapPeers (..))
-import           Ouroboros.Network.PeerSelection.LedgerPeers.Type (LedgerPeerSnapshot(..), UseLedgerPeers)
+import           Ouroboros.Network.PeerSelection.LedgerPeers.Type (LedgerPeerSnapshot (..),
+                   UseLedgerPeers (..))
 import           Ouroboros.Network.PeerSelection.PeerSharing (PeerSharing (..))
-import           Ouroboros.Network.PeerSelection.PeerTrustable (PeerTrustable)
 import           Ouroboros.Network.PeerSelection.RelayAccessPoint (RelayAccessPoint (..))
 import           Ouroboros.Network.PeerSelection.State.LocalRootPeers (HotValency, LocalRootConfig (..), WarmValency)
 import           Ouroboros.Network.Protocol.ChainSync.Codec
@@ -90,7 +87,7 @@ import           Ouroboros.Network.Subscription (DnsSubscriptionTarget (..),
 
 import           Control.Concurrent (killThread, mkWeakThreadId, myThreadId)
 import           Control.Concurrent.Class.MonadSTM.Strict
-import           Control.Exception (try)
+import           Control.Exception (try, IOException)
 import qualified Control.Exception as Exception
 import           Control.Monad (forM, forM_, unless, void, when)
 import           Control.Monad.Class.MonadThrow (MonadThrow (..))
@@ -125,7 +122,34 @@ import           System.Posix.Types (FileMode)
 #else
 import           System.Win32.File
 #endif
+import           Cardano.Network.PeerSelection.Bootstrap (UseBootstrapPeers (..))
+import           Cardano.Network.PeerSelection.PeerTrustable (PeerTrustable)
+import           Ouroboros.Cardano.Diffusion.Handlers (sigUSR1Handler)
+import           Ouroboros.Cardano.Network.ArgumentsExtra (CardanoArgumentsExtra (..))
+import           Ouroboros.Cardano.Network.PeerSelection.Governor.PeerSelectionState
+                   (CardanoPeerSelectionState, CardanoDebugPeerSelectionState)
+import qualified Ouroboros.Network.Diffusion.Common as Common
+import           Ouroboros.Network.PeerSelection.Governor.Types (PeerSelectionState,
+                   PublicPeerSelectionState, makePublicPeerSelectionStateVar, BootstrapPeersCriticalTimeoutError)
 import           Paths_cardano_node (version)
+import qualified Ouroboros.Cardano.Network.PeerSelection.Governor.PeerSelectionState as CPST
+import Cardano.Network.Types (MinBigLedgerPeersForTrustedState(..))
+import Ouroboros.Cardano.Network.PeerSelection.Governor.Types (CardanoPeerSelectionView, cardanoPeerSelectionGovernorArgs)
+import qualified Ouroboros.Cardano.Network.PeerSelection.Governor.Types as CPSV
+import qualified Ouroboros.Cardano.Network.PublicRootPeers as CPRP
+import Ouroboros.Cardano.Network.PublicRootPeers (CardanoPublicRootPeers)
+import Ouroboros.Cardano.Network.PeerSelection.Governor.PeerSelectionActions (CardanoPeerSelectionActions, cardanoExtraArgsToPeerSelectionActions)
+import Ouroboros.Cardano.Network.LedgerPeerConsensusInterface (CardanoLedgerPeersConsensusInterface (..))
+import Ouroboros.Cardano.PeerSelection.PeerSelectionActions (requestPublicRootPeers)
+import Ouroboros.Cardano.Network.PeerSelection.PeerChurnArgs (CardanoPeerChurnArgs(..))
+import Ouroboros.Cardano.PeerSelection.Churn (peerChurnGovernor)
+import Ouroboros.Cardano.Network.PeerSelection.Types (ChurnMode (..))
+import Network.DNS (Resolver)
+import Ouroboros.Network.PeerSelection.RootPeersDNS.PublicRootPeers (TracePublicRootPeers)
+import Ouroboros.Network.BlockFetch (FetchMode)
+import qualified Ouroboros.Cardano.PeerSelection.PeerSelectionActions as Cardano
+import Ouroboros.Network.Diffusion.Configuration (defaultDeadlineChurnInterval, defaultBulkChurnInterval, defaultDeadlineTargets)
+import Ouroboros.Cardano.Diffusion.Configuration (defaultSyncTargets)
 
 
 {- HLINT ignore "Fuse concatMap/map" -}
@@ -354,11 +378,13 @@ handlePeersListSimple tr nodeKern = forever $ do
 -- create a new block.
 
 handleSimpleNode
-  :: forall blk p2p . Api.Protocol IO blk
+  :: forall blk p2p .
+    ( Api.Protocol IO blk
+    )
   => Api.BlockType blk
   -> Api.ProtocolInfoArgs blk
   -> NetworkP2PMode p2p
-  -> Tracers RemoteConnectionId LocalConnectionId blk p2p
+  -> Tracers RemoteConnectionId LocalConnectionId blk p2p CardanoPeerSelectionState CardanoDebugPeerSelectionState PeerTrustable (CardanoPublicRootPeers RemoteAddress) (CardanoPeerSelectionView RemoteAddress) IO
   -> NodeConfiguration
   -> (NodeKernel IO RemoteAddress LocalConnectionId blk -> IO ())
   -- ^ Called on the 'NodeKernel' after creating it, but before the network
@@ -388,29 +414,29 @@ handleSimpleNode blockType runP p2pMode tracers nc onKernel = do
 
   dbPath <- canonDbPath nc
 
-  publicPeerSelectionVar <- Diffusion.makePublicPeerSelectionStateVar
-  let diffusionArguments :: Diffusion.Arguments IO Socket      RemoteAddress
-                                                   LocalSocket LocalAddress
+  publicPeerSelectionVar <- makePublicPeerSelectionStateVar
+  let diffusionArguments :: Common.Arguments IO Socket   RemoteAddress
+                                             LocalSocket LocalAddress
       diffusionArguments =
-        Diffusion.Arguments {
-            Diffusion.daIPv4Address  =
+        Common.Arguments {
+            Common.daIPv4Address  =
               case publicIPv4SocketOrAddr of
                 Just (ActualSocket socket) -> Just (Left socket)
                 Just (SocketInfo addr)     -> Just (Right addr)
                 Nothing                    -> Nothing
-          , Diffusion.daIPv6Address  =
+          , Common.daIPv6Address  =
               case publicIPv6SocketOrAddr of
                 Just (ActualSocket socket) -> Just (Left socket)
                 Just (SocketInfo addr)     -> Just (Right addr)
                 Nothing                    -> Nothing
-          , Diffusion.daLocalAddress =
+          , Common.daLocalAddress =
               case localSocketOrPath of  -- TODO allow expressing the Nothing case in the config
                 Just (ActualSocket localSocket) -> Just (Left  localSocket)
                 Just (SocketInfo localAddr)     -> Just (Right localAddr)
                 Nothing                         -> Nothing
-          , Diffusion.daAcceptedConnectionsLimit = ncAcceptedConnectionsLimit nc
-          , Diffusion.daMode = ncDiffusionMode nc
-          , Diffusion.daPublicPeerSelectionVar = publicPeerSelectionVar
+          , Common.daAcceptedConnectionsLimit = ncAcceptedConnectionsLimit nc
+          , Common.daMode                     = ncDiffusionMode nc
+          , Common.daPublicPeerSelectionVar   = publicPeerSelectionVar
           }
 
   ipv4 <- traverse getSocketOrSocketInfoAddr publicIPv4SocketOrAddr
@@ -454,6 +480,7 @@ handleSimpleNode blockType runP p2pMode tracers nc onKernel = do
                                                 (readTVar ledgerPeerSnapshotPathVar)
                                                 (const . pure $ ())
 
+        churnModeVar <- newTVarIO ChurnModeNormal
         let nodeArgs = RunNodeArgs
               { rnGenesisConfig  = ncGenesisConfig nc
               , rnTraceConsensus = consensusTracers tracers
@@ -504,6 +531,7 @@ handleSimpleNode blockType runP p2pMode tracers nc onKernel = do
                   (readTVar useLedgerVar)
                   (readTVar useBootstrapVar)
                   (readTVar ledgerPeerSnapshotVar)
+                  churnModeVar
           in
           Node.run
             nodeArgs {
@@ -528,6 +556,7 @@ handleSimpleNode blockType runP p2pMode tracers nc onKernel = do
               , srnTraceChainDB                 = chainDBTracer tracers
               , srnMaybeMempoolCapacityOverride = ncMaybeMempoolCapacityOverride nc
               , srnChainSyncTimeout             = customizeChainSyncTimeout
+              , srnSigUSR1SignalHandler         = sigUSR1Handler
               }
       DisabledP2PMode -> do
         nt <- TopologyNonP2P.readTopologyFileOrError nc
@@ -595,13 +624,14 @@ handleSimpleNode blockType runP p2pMode tracers nc onKernel = do
               , srnDiskPolicyArgs              = diskPolicyArgs
               , srnDatabasePath                = dbPath
               , srnDiffusionArguments          = diffusionArguments
-              , srnDiffusionArgumentsExtra     = mkNonP2PArguments ipProducers dnsProducers
+              , srnDiffusionArgumentsExtra     = \_ _ _ -> mkNonP2PArguments ipProducers dnsProducers
               , srnDiffusionTracers            = diffusionTracers tracers
               , srnDiffusionTracersExtra       = diffusionTracersExtra tracers
               , srnEnableInDevelopmentVersions = ncExperimentalProtocolsEnabled nc
               , srnTraceChainDB                = chainDBTracer tracers
               , srnChainSyncTimeout            = customizeChainSyncTimeout
               , srnMaybeMempoolCapacityOverride = ncMaybeMempoolCapacityOverride nc
+              , srnSigUSR1SignalHandler         = sigUSR1Handler
               }
  where
 
@@ -678,7 +708,7 @@ installP2PSigHUPHandler :: Tracer IO (StartupTrace blk)
                         -> Api.BlockType blk
                         -> NodeConfiguration
                         -> NodeKernel IO RemoteAddress (ConnectionId LocalAddress) blk
-                        -> StrictTVar IO [(HotValency, WarmValency, Map RelayAccessPoint LocalRootConfig)]
+                        -> StrictTVar IO [(HotValency, WarmValency, Map RelayAccessPoint (LocalRootConfig PeerTrustable))]
                         -> StrictTVar IO (Map RelayAccessPoint PeerAdvertise)
                         -> StrictTVar IO UseLedgerPeers
                         -> StrictTVar IO UseBootstrapPeers
@@ -780,7 +810,7 @@ updateBlockForging startupTracer blockType nodeKernel nc = do
 
 updateTopologyConfiguration :: Tracer IO (StartupTrace blk)
                             -> NodeConfiguration
-                            -> StrictTVar IO [(HotValency, WarmValency, Map RelayAccessPoint LocalRootConfig)]
+                            -> StrictTVar IO [(HotValency, WarmValency, Map RelayAccessPoint (LocalRootConfig PeerTrustable))]
                             -> StrictTVar IO (Map RelayAccessPoint PeerAdvertise)
                             -> StrictTVar IO UseLedgerPeers
                             -> StrictTVar IO UseBootstrapPeers
@@ -881,15 +911,34 @@ checkVRFFilePermissions (File vrfPrivKey) = do
 
 
 mkP2PArguments
-  :: NodeConfiguration
-  -> STM IO [(HotValency, WarmValency, Map RelayAccessPoint LocalRootConfig)]
+  :: Ord ntnAddr
+  => NodeConfiguration
+  -> STM IO [(HotValency, WarmValency, Map RelayAccessPoint (LocalRootConfig PeerTrustable))]
      -- ^ non-overlapping local root peers groups; the 'Int' denotes the
      -- valency of its group.
   -> STM IO (Map RelayAccessPoint PeerAdvertise)
   -> STM IO UseLedgerPeers
   -> STM IO UseBootstrapPeers
   -> STM IO (Maybe LedgerPeerSnapshot)
-  -> Diffusion.ExtraArguments 'Diffusion.P2P IO
+  -> StrictTVar IO ChurnMode
+  -> Diffusion.P2PDecision 'Diffusion.P2P (Tracer IO TracePublicRootPeers) ()
+  -> Diffusion.P2PDecision 'Diffusion.P2P (STM IO FetchMode) ()
+  -> Diffusion.P2PDecision 'Diffusion.P2P (CardanoLedgerPeersConsensusInterface IO) ()
+  -> Diffusion.ArgumentsExtra 'Diffusion.P2P
+      (CardanoArgumentsExtra IO)
+      CardanoPeerSelectionState
+      extraDebugState
+      (CardanoPeerSelectionActions IO)
+      (CardanoLedgerPeersConsensusInterface IO)
+      (CardanoPublicRootPeers ntnAddr)
+      PeerTrustable
+      (CardanoPeerChurnArgs IO)
+      (CardanoPeerSelectionView ntnAddr)
+      BootstrapPeersCriticalTimeoutError
+      ntnAddr
+      Resolver
+      IOException
+      IO
 mkP2PArguments NodeConfiguration {
                  ncDeadlineTargetOfRootPeers,
                  ncDeadlineTargetOfKnownPeers,
@@ -912,44 +961,70 @@ mkP2PArguments NodeConfiguration {
                daReadPublicRootPeers
                daReadUseLedgerPeers
                daReadUseBootstrapPeers
-               daReadLedgerPeerSnapshot =
-    Diffusion.P2PArguments P2P.ArgumentsExtra
-      { P2P.daPeerTargets = Configuration.ConsensusModePeerTargets {
-          Configuration.deadlineTargets,
-          Configuration.syncTargets }
-      , P2P.daReadLocalRootPeers
-      , P2P.daReadPublicRootPeers
-      , P2P.daReadUseLedgerPeers
-      , P2P.daReadUseBootstrapPeers
-      , P2P.daReadLedgerPeerSnapshot
-      , P2P.daProtocolIdleTimeout   = ncProtocolIdleTimeout
-      , P2P.daTimeWaitTimeout       = ncTimeWaitTimeout
-      , P2P.daDeadlineChurnInterval = Configuration.defaultDeadlineChurnInterval
-      , P2P.daBulkChurnInterval     = Configuration.defaultBulkChurnInterval
-      , P2P.daOwnPeerSharing        = ncPeerSharing
-      , P2P.daConsensusMode         = ncConsensusMode
-      , P2P.daMinBigLedgerPeersForTrustedState = ncMinBigLedgerPeersForTrustedState
+               daReadLedgerPeerSnapshot
+               churnModeVar
+               (Diffusion.P2PDecision tracer)
+               (Diffusion.P2PDecision getFetchMode)
+               (Diffusion.P2PDecision extraAPI) =
+    Diffusion.P2PArguments Common.ArgumentsExtra
+      { Common.daReadLocalRootPeers
+      , Common.daReadPublicRootPeers
+      , Common.daReadUseLedgerPeers
+      , Common.daReadLedgerPeerSnapshot
+      , Common.daPeerSelectionTargets  = peerSelectionTargets
+      , Common.daProtocolIdleTimeout   = ncProtocolIdleTimeout
+      , Common.daTimeWaitTimeout       = ncTimeWaitTimeout
+      , Common.daDeadlineChurnInterval = defaultDeadlineChurnInterval
+      , Common.daBulkChurnInterval     = defaultBulkChurnInterval
+      , Common.daEmptyExtraState       = CPST.empty ncConsensusMode ncMinBigLedgerPeersForTrustedState
+      , Common.daEmptyExtraCounters    = CPSV.empty
+      , Common.daExtraPeersAPI         = CPRP.cardanoPublicRootPeersAPI
+      , Common.daPeerChurnGovernor     = peerChurnGovernor
+      , Common.daExtraActions          = cardanoExtraArgsToPeerSelectionActions cardanoExtraArgs
+      , Common.daExtraChurnArgs        = cardanoPeerChurnArgs
+      , Common.daOwnPeerSharing        = ncPeerSharing
+      , Common.daPeerSelectionStateToExtraCounters = CPSV.cardanoPeerSelectionStatetoCounters
+      , Common.daPeerSelectionGovernorArgs         = cardanoPeerSelectionGovernorArgs daReadUseLedgerPeers ncPeerSharing (clpciUpdateOutboundConnectionsState extraAPI)
+      , Common.daRequestPublicRootPeers            = Cardano.requestPublicRootPeers tracer daReadUseBootstrapPeers (clpciGetLedgerStateJudgement extraAPI) daReadPublicRootPeers
+      , Common.daExtraArgs = cardanoExtraArgs
       }
   where
-    deadlineTargets = Configuration.defaultDeadlineTargets {
-        targetNumberOfRootPeers        = ncDeadlineTargetOfRootPeers,
-        targetNumberOfKnownPeers       = ncDeadlineTargetOfKnownPeers,
-        targetNumberOfEstablishedPeers = ncDeadlineTargetOfEstablishedPeers,
-        targetNumberOfActivePeers      = ncDeadlineTargetOfActivePeers,
-        targetNumberOfKnownBigLedgerPeers       = ncDeadlineTargetOfKnownBigLedgerPeers,
-        targetNumberOfEstablishedBigLedgerPeers = ncDeadlineTargetOfEstablishedBigLedgerPeers,
-        targetNumberOfActiveBigLedgerPeers      = ncDeadlineTargetOfActiveBigLedgerPeers
+    peerSelectionTargets = defaultDeadlineTargets {
+      targetNumberOfRootPeers        = ncDeadlineTargetOfRootPeers,
+      targetNumberOfKnownPeers       = ncDeadlineTargetOfKnownPeers,
+      targetNumberOfEstablishedPeers = ncDeadlineTargetOfEstablishedPeers,
+      targetNumberOfActivePeers      = ncDeadlineTargetOfActivePeers,
+      targetNumberOfKnownBigLedgerPeers       = ncDeadlineTargetOfKnownBigLedgerPeers,
+      targetNumberOfEstablishedBigLedgerPeers = ncDeadlineTargetOfEstablishedBigLedgerPeers,
+      targetNumberOfActiveBigLedgerPeers      = ncDeadlineTargetOfActiveBigLedgerPeers
     }
-    syncTargets = Configuration.defaultSyncTargets {
+
+    genesisSelectionTargets = defaultSyncTargets {
       targetNumberOfActivePeers               = ncSyncTargetOfActivePeers,
       targetNumberOfKnownBigLedgerPeers       = ncSyncTargetOfKnownBigLedgerPeers,
       targetNumberOfEstablishedBigLedgerPeers = ncSyncTargetOfEstablishedBigLedgerPeers,
       targetNumberOfActiveBigLedgerPeers      = ncSyncTargetOfActiveBigLedgerPeers }
 
+    cardanoPeerChurnArgs =
+      CardanoPeerChurnArgs {
+        cpcaModeVar            = churnModeVar
+      , cpcaReadFetchMode      = getFetchMode
+      , cpcaGenesisPeerTargets = peerSelectionTargets
+      , cpcaReadUseBootstrap   = daReadUseBootstrapPeers
+      , cpcaConsensusMode      = ncConsensusMode
+      }
+    cardanoExtraArgs =
+      CardanoArgumentsExtra {
+        caeGenesisPeerTargets               = genesisSelectionTargets
+      , caeReadUseBootstrapPeers            = daReadUseBootstrapPeers
+      , caeConsensusMode                    = ncConsensusMode
+      , caeMinBigLedgerPeersForTrustedState = ncMinBigLedgerPeersForTrustedState
+      }
+
 mkNonP2PArguments
   :: IPSubscriptionTarget
   -> [DnsSubscriptionTarget]
-  -> Diffusion.ExtraArguments 'Diffusion.NonP2P m
+  -> Diffusion.ArgumentsExtra 'Diffusion.NonP2P extraArgs extraState extraDebugState extraActions extraAPI extraPeers extraFlags extraChurnArgs extraCounters BootstrapPeersCriticalTimeoutError ntnAddr Resolver IOException IO
 mkNonP2PArguments daIpProducers daDnsProducers =
     Diffusion.NonP2PArguments NonP2P.ArgumentsExtra
       { NonP2P.daIpProducers
@@ -978,7 +1053,7 @@ producerAddressesNonP2P nt =
 
 producerAddresses
   :: NetworkTopology
-  -> ( [(HotValency, WarmValency, Map RelayAccessPoint LocalRootConfig)]
+  -> ( [(HotValency, WarmValency, Map RelayAccessPoint (LocalRootConfig PeerTrustable))]
      , Map RelayAccessPoint PeerAdvertise
      )
   -- ^ local roots & public roots
