@@ -44,17 +44,20 @@ startLedgerMetricsTracer
   -> Int
   -> NodeKernelData blk
   -> IO ()
-startLedgerMetricsTracer tr _delayMilliseconds nodeKernelData = do
+startLedgerMetricsTracer _ 0 _ = pure ()
+startLedgerMetricsTracer tr everyNThSlot nodeKernelData = do
     as <- async ledgerMetricsThread
     link as
   where
     ledgerMetricsThread :: IO ()
-    ledgerMetricsThread = go (-1) where
-      go slot = do
+    ledgerMetricsThread = go 1 (-1) where
+      go !i slot = do
         !query <- waitForDifferentSlot slot
         threadDelay $ 700 * 1000
         case query of
-          SJust slot' -> traceLedgerMetrics nodeKernelData slot' tr >> go slot'
+          SJust slot'
+            | i - 1 == 0 -> traceLedgerMetrics nodeKernelData slot' tr >> go everyNThSlot slot'
+            | otherwise  -> go (i - 1) slot'
           SNothing    -> go slot
 
     waitForDifferentSlot :: SlotNo -> IO (StrictMaybe SlotNo)

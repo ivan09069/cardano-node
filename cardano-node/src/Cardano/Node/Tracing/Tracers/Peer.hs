@@ -50,6 +50,7 @@ startPeerTracer
   -> NodeKernelData blk
   -> Int
   -> IO ()
+startPeerTracer _ _ 0 = pure ()
 startPeerTracer tr nodeKern delayMilliseconds = do
     as <- async peersThread
     link as

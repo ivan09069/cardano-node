@@ -16,6 +16,7 @@ startResourceTracer
   :: Tracer IO ResourceStats
   -> Int
   -> IO ()
+startResourceTracer _ 0 = pure ()
 startResourceTracer tr delayMilliseconds = do
     as <- async resourceThread
     link as
