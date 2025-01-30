@@ -9,14 +9,15 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 
-module Cardano.Testnet.Test.Cli.Query
-  ( hprop_cli_queries
-  ) where
+module Cardano.Testnet.Test.Cli.Query (
+    hprop_cli_queries
+) where
 
 import           Cardano.Api
 import           Cardano.Api.Experimental (Some (..))
 import qualified Cardano.Api.Genesis as Api
-import           Cardano.Api.Ledger (Coin (Coin), EpochInterval (EpochInterval), StandardCrypto, unboundRational)
+import           Cardano.Api.Ledger (Coin (Coin), EpochInterval (EpochInterval), StandardCrypto,
+                   unboundRational)
 import qualified Cardano.Api.Ledger as L
 import           Cardano.Api.Shelley (StakeCredential (StakeCredentialByKey), StakePoolKey)
 
@@ -54,7 +55,7 @@ import           System.FilePath ((</>))
 
 import           Testnet.Components.Configuration (eraToString)
 import           Testnet.Components.Query (EpochStateView, checkDRepsNumber, getEpochStateView,
-                   watchEpochStateUpdate, getTxIx)
+                   getTxIx, watchEpochStateUpdate)
 import qualified Testnet.Defaults as Defaults
 import           Testnet.Process.Cli.Transaction (TxOutAddress (..), mkSimpleSpendOutputsOnlyTx,
                    mkSpendOutputsOnlyTx, retrieveTransactionId, signTx, submitTx)
@@ -340,7 +341,7 @@ hprop_cli_queries = integrationWorkspace "cli-queries" $ \tempAbsBasePath' -> H.
         let transferAmount = Coin 10_000_000
         -- Submit a transaction to publish the reference script
         txBody <- mkSpendOutputsOnlyTx execConfig epochStateView sbe refScriptSizeWork "tx-body" wallet1
-                    [(ReferenceScriptAddress plutusV3Script, transferAmount)]
+                    [(ScriptAddress plutusV3Script, transferAmount, Just plutusV3Script)]
         signedTx <- signTx execConfig cEra refScriptSizeWork "signed-tx" txBody [Some $ paymentKeyInfoPair wallet1]
         submitTx execConfig cEra signedTx
         -- Wait until transaction is on chain and obtain transaction identifier
