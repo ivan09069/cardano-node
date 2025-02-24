@@ -119,9 +119,7 @@ doConnectToForwarder snocket address TracerEnv {..} timeLimits app
     ctaHandshakeCodec = codecHandshake forwardingVersionCodec
     ctaHandshakeTimeLimits = timeLimits
     ctaVersionDataCodec = cborTermVersionDataCodec forwardingCodecCBORTerm
-    ctaConnectTracers
-      | Just True <- tracerConfigDebug = debuggingNetworkConnectTracers
-      | otherwise = nullNetworkConnectTracers
+    ctaConnectTracers = debuggingNetworkConnectTracers
     ctaHandshakeCallbacks = HandshakeCallbacks acceptableVersion queryVersion
     fwdVersData = ForwardingVersionData $ NetworkMagic networkMagic
     versions = simpleSingletonVersions ForwardingV_1 fwdVersData app

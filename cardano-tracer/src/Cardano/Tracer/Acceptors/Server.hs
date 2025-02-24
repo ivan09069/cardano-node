@@ -39,7 +39,8 @@ import           Ouroboros.Network.Snocket (LocalAddress, LocalSocket, Snocket,
                    localAddressFromPath, localSnocket, makeLocalBearer)
 import           Ouroboros.Network.Socket (AcceptedConnectionsLimit (..), ConnectionId (..),
                    HandshakeCallbacks (..), SomeResponderApplication (..), cleanNetworkMutableState,
-                   newNetworkMutableState, nullNetworkServerTracers, withServerNode)
+                   debuggingNetworkServerTracers, newNetworkMutableState,
+                   nullNetworkServerTracers, withServerNode)
 
 import           Codec.CBOR.Term (Term)
 import           Control.Concurrent.Async (race_, wait)
@@ -98,21 +99,21 @@ runAcceptorsServer tracerEnv tracerEnvRTView p ( ekgConfig, tfConfig, dpfConfig)
 doListenToForwarder
   :: Snocket IO LocalSocket LocalAddress
   -> LocalAddress
-  -> Word32
+  -> TracerEnv
   -> ProtocolTimeLimits (Handshake ForwardingVersion Term)
   -> OuroborosApplication 'Mux.ResponderMode
                           (MinimalInitiatorContext LocalAddress)
                           (ResponderContext LocalAddress)
                           LBS.ByteString IO Void ()
   -> IO ()
-doListenToForwarder snocket address netMagic timeLimits app = do
+doListenToForwarder snocket address TracerEnv {..} timeLimits app = do
   networkState <- newNetworkMutableState
   race_ (cleanNetworkMutableState networkState) do
     withServerNode
       snocket
       makeLocalBearer
       mempty -- LocalSocket does not need to be configured
-      nullNetworkServerTracers
+      serverTracers
       networkState
       (AcceptedConnectionsLimit maxBound maxBound 0)
       address
@@ -120,13 +121,16 @@ doListenToForwarder snocket address netMagic timeLimits app = do
       timeLimits
       (cborTermVersionDataCodec forwardingCodecCBORTerm)
       (HandshakeCallbacks acceptableVersion queryVersion)
-      (simpleSingletonVersions
-        ForwardingV_1
-        (ForwardingVersionData $ NetworkMagic netMagic)
-        (SomeResponderApplication app)
-      )
+      (mkVersions $ SomeResponderApplication app)
       nullErrorPolicies
       $ \_ serverAsync -> wait serverAsync -- Block until async exception.
+  where
+    TC.TracerConfig {..} = teConfig
+    serverTracers
+      | Just True <- tracerConfigDebug = debuggingNetworkServerTracers
+      | otherwise = nullNetworkServerTracers
+    fwdVersData = ForwardingVersionData $ NetworkMagic networkMagic
+    mkVersions = simpleSingletonVersions ForwardingV_1 fwdVersData
 
 runEKGAcceptor
   :: TracerEnv
