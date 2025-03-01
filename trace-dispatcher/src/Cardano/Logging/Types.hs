@@ -401,8 +401,7 @@ parsePrometheusString t = case T.words t of
     parsePort p = case T.decimal p of
       Right (portNo :: Word, rest)
         | T.null rest && 0 < portNo && portNo < 65536 -> Right $ fromIntegral portNo
-        | otherwise                                   -> failure
-      Left{}                                          -> failure
+      _                                               -> failure
       where failure = Left $ "invalid PrometheusSimple port: " ++ show p
 
 data FormatLogging =

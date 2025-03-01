@@ -17,11 +17,14 @@ module Cardano.Logging.Prometheus.NetworkRun
 import           Cardano.Logging.Utils (threadLabelMe)
 
 import           Control.Concurrent (forkFinally, forkIO, threadDelay)
+import           Control.Concurrent.MVar
 import           Control.Concurrent.STM (atomically)
 import           Control.Concurrent.STM.TBQueue
 import qualified Control.Exception as E
 import           Control.Monad (forever, void, when)
+import qualified Data.Foldable as F (sum)
 import           Data.Hashable (hash)
+import qualified Data.IntMap.Strict as IM
 import qualified Data.List.NonEmpty as NE
 import           Data.Maybe (fromMaybe)
 import           Network.Socket
@@ -34,14 +37,20 @@ data NetworkRunParams = NetworkRunParams
   , runSocketGraceful   :: !Int             -- ^ Graceful closing of socket (milliseconds), 0 to disable
   , runRecvMaxSize      :: !Int             -- ^ Close socket if more than (runRecvMaxSize - 1) bytes received; choose a small power of 2
   , runRateLimit        :: !Double          -- ^ Limit requests per second (may be < 0.0), 0.0 to disable
+  , runConnLimitGlobal  :: !Int             -- ^ Limit total number of incoming connections, 0 to disable
+  , runConnLimitPerHost :: !Int             -- ^ Limit number of incoming connections from the same host, 0 to disable
+  , runServerName       :: !String          -- ^ The server name - exclusively used for labeling GHC threads
   }
 
-defaultRunParams :: NetworkRunParams
-defaultRunParams = NetworkRunParams
+defaultRunParams :: String -> NetworkRunParams
+defaultRunParams name = NetworkRunParams
   { runSocketTimeout    = 16
   , runSocketGraceful   = 1000
   , runRecvMaxSize      = 2048
   , runRateLimit        = 3.0
+  , runConnLimitGlobal  = 12
+  , runConnLimitPerHost = 3
+  , runServerName       = name
   }
 
 
@@ -61,7 +70,7 @@ runTCPServer
   -> TimeoutServer a
   -> IO a
 runTCPServer runParams (fromMaybe "127.0.0.1" -> host) portNo server = do
-  threadLabelMe "PrometheusSimple server"
+  threadLabelMe $ runServerName runParams ++ " server"
   addr <- resolve host portNo
   E.bracket (openTCPServerSocket addr) close $ \sock ->
     runTCPServerWithSocket runParams sock server
@@ -72,18 +81,19 @@ runTCPServerWithSocket
   -> TimeoutServer a
   -> IO a
 runTCPServerWithSocket runParams@NetworkRunParams{..} sock server = do
-  rateLimiter <- mkRateLimiter runRateLimit
+  rateLimiter     <- mkRateLimiter runServerName runRateLimit
+  ConnLimiter{..} <- mkConnLimiter runConnLimitGlobal runConnLimitPerHost
   T.withManager (runSocketTimeout * 1000000) $ \mgr -> forever $ do
     waitForLimiter rateLimiter
-    E.bracketOnError (accept sock) (close . fst) $ \(conn, _peer) ->
-
-      -- TODO implement connection limit (global + per peer)
-
-      void $ forkFinally (server' mgr conn) (const $ gclose conn)
+    E.bracketOnError (accept sock) (close . fst) $ \(conn, peer) -> do
+      noLimitHit <- canServeThisPeer peer
+      if noLimitHit
+        then void $ forkFinally (server' mgr conn) (const $ gclose conn >> releasePeer peer)
+        else close conn
   where
     gclose = if runSocketGraceful > 0 then flip gracefulClose runSocketGraceful else close
     server' mgr conn = do
-      threadLabelMe "PrometheusSimple timeout server"
+      threadLabelMe $ runServerName ++ " timeout server"
       T.withHandle mgr (return ()) $ \timeoutHandle ->
         server runParams (T.tickle timeoutHandle) conn
 
@@ -110,23 +120,57 @@ openTCPServerSocket addr = do
 
 newtype RateLimiter = RateLimiter {waitForLimiter :: IO ()}
 
-mkRateLimiter :: Double -> IO RateLimiter
-mkRateLimiter reqPerSecond
-  | reqPerSecond == 0.0 = pure $ RateLimiter (pure ())
-  | otherwise = do
-    lock <- newTBQueueIO queueSize
-    void . forkIO $ do
-      threadLabelMe "PrometheusSimple rate limiter"
-      forever $ do
-        atomically $ writeTBQueue lock ()
-        threadDelay delay
-    pure $ RateLimiter (void $ atomically $ readTBQueue lock)
-    where
-        delay     = round $ 1000000 / reqPerSecond
-        queueSize = ceiling reqPerSecond
+mkRateLimiter :: String -> Double -> IO RateLimiter
+mkRateLimiter _ 0.0 = pure $ RateLimiter (pure ())
+mkRateLimiter serverName reqPerSecond = do
+  lock <- newTBQueueIO queueSize
+  void . forkIO $ do
+    threadLabelMe $ serverName ++ " rate limiter"
+    forever $ do
+      atomically $ writeTBQueue lock ()
+      threadDelay delay
 
-_peerId :: SockAddr -> Int
-_peerId = \case
-  SockAddrInet _ h      -> hash h
-  SockAddrInet6 _ _ h _ -> hash h
-  SockAddrUnix s        -> hash s
+  pure $ RateLimiter (void $ atomically $ readTBQueue lock)
+  where
+      delay     = round $ 1000000 / reqPerSecond
+      queueSize = ceiling reqPerSecond
+
+data ConnLimiter = ConnLimiter
+  { canServeThisPeer  :: SockAddr -> IO Bool  -- ^ Can I serve this peer without hitting a limit?
+  , releasePeer       :: SockAddr -> IO ()    -- ^ Release peer from the limiter after connection has been closed.
+  }
+
+mkConnLimiter :: Int -> Int -> IO ConnLimiter
+mkConnLimiter 0 0 = pure $ ConnLimiter (const $ pure True) (const $ pure ())
+mkConnLimiter global perHost = do
+  lock <- newMVar IM.empty
+  let
+    canServeThisPeer (getPeerId -> peerId) =
+      modifyMVar lock $ \intMap ->
+        let
+          intMap'   = IM.alter upsert peerId intMap
+          count'    = F.sum intMap'
+          canServe  = didntHitGlobalLimit count' && count' > F.sum intMap
+        in pure (if canServe then intMap' else intMap, canServe)
+    releasePeer (getPeerId -> peerId) =
+      modifyMVar_ lock (pure . IM.alter removeOrDecrease peerId)
+
+  pure ConnLimiter{..}
+  where
+    wontHitHostLimit    = if perHost == 0 then const True else (< perHost)
+    didntHitGlobalLimit = if global == 0  then const True else (<= global)
+
+    upsert, removeOrDecrease :: Maybe Int -> Maybe Int
+    upsert = \case
+      Just n  -> if wontHitHostLimit n then Just (n + 1) else Just n
+      Nothing -> Just 1
+
+    removeOrDecrease = \case
+      Just n | n > 1  -> Just (n - 1)
+      _               -> Nothing
+
+    getPeerId :: SockAddr -> Int
+    getPeerId = \case
+        SockAddrInet _ h      -> hash h
+        SockAddrInet6 _ _ h _ -> hash h
+        SockAddrUnix s        -> hash s
