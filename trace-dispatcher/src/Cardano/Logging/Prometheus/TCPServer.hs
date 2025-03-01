@@ -33,7 +33,7 @@ runPrometheusSimple ekgStore mHost portNo =
   where
     getCurrentExposition = renderExpositionFromSample <$> sampleAll ekgStore
     serveListener =
-      runTCPServer defaultRunParams mHost portNo (serveAccepted getCurrentExposition)
+      runTCPServer (defaultRunParams "PrometheusSimple") mHost portNo (serveAccepted getCurrentExposition)
 
 -- serves an incoming connection; will release socket upon remote close, inactivity timeout or runRecvMaxSize bytes received
 serveAccepted :: IO Text -> TimeoutServer ()
