@@ -18,14 +18,13 @@ module Cardano.Logging.Forwarding
 import           Cardano.Logging.Types
 import           Cardano.Logging.Utils (runInLoop)
 import           Cardano.Logging.Version
-import qualified Network.Mux as Mux
 import           Ouroboros.Network.Driver.Limits (ProtocolTimeLimits)
 import           Ouroboros.Network.ErrorPolicy (nullErrorPolicies)
 import           Ouroboros.Network.IOManager (IOManager)
 import           Ouroboros.Network.Magic (NetworkMagic)
 import           Ouroboros.Network.Mux (MiniProtocol (..), MiniProtocolLimits (..),
-                   MiniProtocolNum (..), OuroborosApplication (..),
-                   RunMiniProtocol (..), miniProtocolLimits, miniProtocolNum, miniProtocolRun)
+                   MiniProtocolNum (..), OuroborosApplication (..), RunMiniProtocol (..),
+                   miniProtocolLimits, miniProtocolNum, miniProtocolRun)
 import           Ouroboros.Network.Protocol.Handshake.Codec (cborTermVersionDataCodec,
                    codecHandshake, noTimeLimitsHandshake)
 import           Ouroboros.Network.Protocol.Handshake.Type (Handshake)
@@ -40,17 +39,19 @@ import           Ouroboros.Network.Socket (AcceptedConnectionsLimit (..), Connec
 
 import           Codec.CBOR.Term (Term)
 import           Control.Concurrent.Async (async, race_, wait)
-import           Control.Monad (void)
 import           Control.Exception (throwIO)
+import           Control.Monad (void)
 import           Control.Monad.IO.Class
 import           "contra-tracer" Control.Tracer (Tracer, contramap, nullTracer, stdoutTracer)
 import qualified Data.ByteString.Lazy as LBS
 import           Data.Void (Void, absurd)
 import           Data.Word (Word16)
+import qualified Network.Mux as Mux
 import           System.IO (hPutStrLn, stderr)
 import qualified System.Metrics as EKG
 import qualified System.Metrics.Configuration as EKGF
 import           System.Metrics.Network.Forwarder
+import           System.Metrics.Store.Deltify (mkDeltify)
 
 import qualified Trace.Forward.Configuration.DataPoint as DPF
 import qualified Trace.Forward.Configuration.TraceObject as TF
@@ -214,6 +215,7 @@ doConnectToAcceptor
   -> IO ()
 doConnectToAcceptor magic snocket makeBearer configureSocket address timeLimits
                     ekgConfig tfConfig dpfConfig sink ekgStore dpStore = do
+  forwardEKGMetricsRun <- initEKGMetricsRun
   done <- connectToNode
     snocket
     makeBearer
@@ -255,10 +257,10 @@ doConnectToAcceptor magic snocket makeBearer configureSocket address timeLimits
       | (prot, num) <- protocols
       ]
 
-  forwardEKGMetricsRun =
+  initEKGMetricsRun =
     case ekgStore of
-      Just store -> forwardEKGMetrics ekgConfig store
-      Nothing -> forwardEKGMetricsDummy
+      Just store -> mkDeltify >>= \d -> pure (forwardEKGMetrics ekgConfig d store)
+      Nothing -> pure forwardEKGMetricsDummy
 
 doListenToAcceptor
   :: Ord addr
@@ -277,6 +279,7 @@ doListenToAcceptor
   -> IO ()
 doListenToAcceptor magic snocket makeBearer configureSocket address timeLimits
                    ekgConfig tfConfig dpfConfig sink ekgStore dpStore = do
+  forwardEKGMetricsRespRun <- initEKGMetricsRespRun
   networkState <- newNetworkMutableState
   race_ (cleanNetworkMutableState networkState)
         $ withServerNode
@@ -318,7 +321,7 @@ doListenToAcceptor magic snocket makeBearer configureSocket address timeLimits
       | (prot, num) <- protocols
       ]
 
-  forwardEKGMetricsRespRun =
+  initEKGMetricsRespRun =
     case ekgStore of
-      Just store -> forwardEKGMetricsResp ekgConfig store
-      Nothing -> forwardEKGMetricsRespDummy
+      Just store -> mkDeltify >>= \d -> pure (forwardEKGMetricsResp ekgConfig d store)
+      Nothing -> pure forwardEKGMetricsRespDummy

@@ -64,3 +64,11 @@ allow-newer:
 -- IMPORTANT
 -- Do NOT add more source-repository-package stanzas here unless they are strictly
 -- temporary! Please read the section in CONTRIBUTING about updating dependencies.
+
+source-repository-package
+  type: git
+  location: https://github.com/input-output-hk/ekg-forward.git
+  tag: 821ea3645dd34b026df95e19654fb108f2bdedea
+  --sha256: sha256-dkOsGU5I20vk0yVtOqC9UjGmI2R3Yrja5To7JD2M8H0=
+  subdir:
+    .

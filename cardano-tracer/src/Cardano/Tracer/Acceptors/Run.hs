@@ -52,7 +52,7 @@ runAcceptors tracerEnv@TracerEnv{teTracer} tracerEnvRTView = do
         { EKGF.acceptorTracer    = mkVerbosity verbosity
         , EKGF.forwarderEndpoint = EKGF.LocalPipe p
         , EKGF.requestFrequency  = secondsToNominalDiffTime $ fromMaybe 1.0 ekgRequestFreq
-        , EKGF.whatToRequest     = EKGF.GetAllMetrics
+        , EKGF.whatToRequest     = EKGF.GetUpdatedMetrics -- EKGF.GetAllMetrics
         , EKGF.shouldWeStop      = teProtocolsBrake tracerEnv
         }
     , TOF.AcceptorConfiguration
