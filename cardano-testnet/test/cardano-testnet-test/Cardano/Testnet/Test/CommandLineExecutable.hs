@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Cardano.Testnet.Test.CommandLineExecutable
   ( hprop_cardano_testnet_executable
@@ -6,9 +7,13 @@ module Cardano.Testnet.Test.CommandLineExecutable
 
 import           Control.Monad
 import           Control.Monad.IO.Class (liftIO)
-import           Data.Aeson (decodeFileStrict', encodeFile, (.=))
+import           Data.Aeson (decodeFileStrict', encodeFile, (.=), Value(..))
 import           Data.Aeson.Types (Value (Object))
+import qualified Data.Aeson.Key as Aeson
+import qualified Data.Aeson.KeyMap as Aeson
 import           Data.Maybe (fromJust)
+import qualified Data.Text as T
+import qualified Data.Text.Lazy as TL
 import           Data.Time.Clock (addUTCTime, getCurrentTime)
 import           Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import           Data.Time.Format (defaultTimeLocale, formatTime)
@@ -32,9 +37,9 @@ updateShelleySystemStart :: Value -> IO (Value, Int)
 updateShelleySystemStart (Object obj) = do
   currentTime <- getCurrentTime
   let futureTime = addUTCTime 15 currentTime
-      formattedTime = formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ" futureTime
+      formattedTime :: T.Text = T.pack $ formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ" futureTime
       timestamp = round $ utcTimeToPOSIXSeconds futureTime
-  return (Object (obj <> ("systemStart" .= formattedTime)), timestamp)
+  return (Object (Aeson.insert "systemStart" (String formattedTime) obj), {-formattedTime,-} timestamp)
 updateShelleySystemStart _ = error "Expected a JSON object"
 
 -- Function to update the @startTime@ field of the Byron genesis
@@ -53,10 +58,10 @@ hprop_cardano_testnet_executable = integrationWorkspace "cardano-testnet-executa
       allFiles = ["configuration.json", "alonzo-genesis.json", "byron-genesis.json", "conway-genesis.json", "shelley-genesis.json"]
   liftIO $ forM_ allFiles $ \file -> copyFile (referenceInputsFileDir </> file) (tempAbsBasePath </> file)
 
-  -- Amend the start time in the Genesis configuration file
+  -- Amend the start time in the Shelley Genesis configuration file
   let shelleyGenesisFilePath = tempAbsBasePath </> "shelley-genesis.json"
   genesisValue <- liftIO $ fromJust <$> decodeFileStrict' shelleyGenesisFilePath
-  (updatedShelleyGenesisValue, startTime) <- liftIO $ updateShelleySystemStart genesisValue
+  (updatedShelleyGenesisValue, _startTime) <- liftIO $ updateShelleySystemStart genesisValue
   liftIO $ encodeFile shelleyGenesisFilePath updatedShelleyGenesisValue
 
   -- Amend the start time in the Byron Genesis configuration file
