@@ -23,7 +23,6 @@ module Testnet.Start.Types
   , isSpoNodeOptions
   , isRelayNodeOptions
   , cardanoDefaultTestnetNodeOptions
-  , GenesisBatch(..)
   , GenesisOptions(..)
   , GenesisOrigin(..)
 
@@ -150,9 +149,6 @@ data UserNodeConfig =
 data GenesisOrigin =
   UserProvidedOrigin -- ^ Caller of @cardano-tesnet@ provided the genesis files
   | DefaultedOrigin -- ^ Genesis file provided by @cardano-testnet@ itself
-
--- | Type to bundle all genesis files, whether provided by the user or defaulted by @cardano-testnet@.
-newtype GenesisBatch = GenesisBatch (ShelleyGenesis StandardCrypto, AlonzoGenesis, ConwayGenesis StandardCrypto, GenesisOrigin)
 
 -- | Get extra CLI arguments passed to the node executable
 testnetNodeExtraCliArgs :: TestnetNodeOptions -> [String]
