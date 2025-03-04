@@ -42,12 +42,6 @@ updateShelleySystemStart (Object obj) = do
   return (Object (Aeson.insert "systemStart" (String formattedTime) obj), {-formattedTime,-} timestamp)
 updateShelleySystemStart _ = error "Expected a JSON object"
 
--- Function to update the @startTime@ field of the Byron genesis
-updateByronStartTime :: Int -> Value -> Value
-updateByronStartTime newStartTime (Object obj) =
-  Object (obj <> ("startTime" .= newStartTime))
-updateByronStartTime _ _ = error "Expected a JSON object"
-
 -- | Test the `cardano-testnet` executable
 -- Execute me with:
 -- @cabal test cardano-testnet-test --test-options '-p "/cardano-testnet-executable/"'@
@@ -64,13 +58,7 @@ hprop_cardano_testnet_executable = integrationWorkspace "cardano-testnet-executa
   (updatedShelleyGenesisValue, _startTime) <- liftIO $ updateShelleySystemStart genesisValue
   liftIO $ encodeFile shelleyGenesisFilePath updatedShelleyGenesisValue
 
-  -- Amend the start time in the Byron Genesis configuration file
-  let byronGenesisFilePath = tempAbsBasePath </> "byron-genesis.json"
-  byronGenesisValue <- liftIO $ fromJust <$> decodeFileStrict' byronGenesisFilePath
-  let updatedByronGenesisValue = updateByronStartTime startTime byronGenesisValue
-  liftIO $ encodeFile byronGenesisFilePath updatedByronGenesisValue
-
-  -- Alright, all files are in place, let's start the node:
+  -- Alright, all files are in place, let's start the cluster:
   let cmd = ("cabal", [ "run", "cardano-testnet", "--", "cardano"
                       , "--node-config", tempAbsBasePath </> "configuration.json"
                       , "--testnet-magic", "44"])
