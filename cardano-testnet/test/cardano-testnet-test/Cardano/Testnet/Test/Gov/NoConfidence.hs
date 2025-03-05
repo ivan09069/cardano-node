@@ -121,6 +121,7 @@ hprop_gov_no_confidence = integrationWorkspace "no-confidence" $ \tempAbsBasePat
     } <- cardanoTestnet
            fastTestnetOptions
            conf UserNodeConfigNotSubmitted (shelleyGenesis', DefaultedOrigin)
+           (alonzoGenesis, DefaultedOrigin) (conwayGenesisWithCommittee, UserProvidedOrigin)
 
   poolNode1 <- H.headM testnetNodes
   poolSprocket1 <- H.noteShow $ nodeSprocket poolNode1
@@ -267,4 +268,3 @@ committeeIsPresent committeeExists (AnyNewEpochState sbe newEpochState, _, _) =
                     else Nothing
     )
     sbe
-
