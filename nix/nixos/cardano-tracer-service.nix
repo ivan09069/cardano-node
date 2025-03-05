@@ -6,7 +6,7 @@
 }:
 with lib;
 with builtins; let
-  inherit (types) ints nullOr str;
+  inherit (types) attrs attrsOf bool enum ints listOf package port nullOr str;
 
   cfg = config.services.cardano-tracer;
 
@@ -17,7 +17,15 @@ with builtins; let
 
   tracerConfig =
     {
-      ekgRequestFreq = 1;
+      inherit
+        (cfg)
+        ekgRequestFreq
+        loRequestNum
+        metricsHelp
+        networkMagic
+        resourceFreq
+        verbosity
+        ;
 
       logging = [
         {
@@ -31,10 +39,6 @@ with builtins; let
         contents = "/tmp/forwarder.sock";
         tag = "AcceptAt";
       };
-
-      networkMagic = cfg.networkMagic;
-
-      resourceFreq = null;
 
       rotation = {
         rpFrequencySecs = 15;
@@ -66,15 +70,23 @@ with builtins; let
     cmd =
       filter (x: x != "")
       [
-        "${cfg.executable} run"
+        "${cfg.executable}"
         "--config ${configFile}"
+      ]
+      ++ optionals (!isNull cfg.minLogSeverity) [
+        "--min-log-severity ${cfg.minLogSeverity}"
+      ]
+      ++ optionals (!isNull cfg.stateDir) [
+        "--state-dir ${cfg.stateDir}"
       ]
       ++ cfg.extraArgs
       ++ cfg.rtsArgs;
   in ''
     echo "Starting: ${concatStringsSep "\"\n   echo \"" cmd}"
+
     echo "..or, once again, in a single line:"
     echo "${toString cmd}"
+
     ${toString cmd}
   '';
   # runtimeDir = i : if cfg.runtimeDir i == null then cfg.stateDir i else "${cfg.runDirBase}${removePrefix cfg.runDirBase (cfg.runtimeDir i)}";
@@ -83,7 +95,7 @@ in {
   options = {
     services.cardano-tracer = {
       enable = mkOption {
-        type = types.bool;
+        type = bool;
         default = false;
         description = ''
           Enable cardano-tracer, a service for logging and monitoring of
@@ -99,7 +111,7 @@ in {
       #####################################
 
       asserts = mkOption {
-        type = types.bool;
+        type = bool;
         default = false;
         description = ''
           Whether to use an executable with asserts enabled.
@@ -107,7 +119,7 @@ in {
       };
 
       cardanoNodePackages = mkOption {
-        type = types.attrs;
+        type = attrs;
         default = pkgs.cardanoNodePackages or (import ../. {inherit (pkgs) system;}).cardanoNodePackages;
         defaultText = "cardano-node packages";
         description = ''
@@ -128,7 +140,7 @@ in {
       };
 
       ekgEnable = mkOption {
-        type = types.bool;
+        type = bool;
         default = true;
         description = ''
           Whether to enable an EKG http interface for process monitoring.
@@ -136,7 +148,7 @@ in {
       };
 
       ekgHost = mkOption {
-        type = types.str;
+        type = str;
         default = "127.0.0.1";
         description = ''
           The host to bind if EKG is enabled.
@@ -144,15 +156,29 @@ in {
       };
 
       ekgPort = mkOption {
-        type = types.port;
+        type = port;
         default = 12788;
         description = ''
           The port to listen on if EKG is enabled.
         '';
       };
 
+      ekgRequestFreq = mkOption {
+        type = nullOr ints.positive;
+        default = null;
+        description = ''
+          This optional attribute specifies the period of how often EKG metrics
+          will be requested, in seconds. For example, if ekgRequestFreq is 10,
+          cardano-tracer will ask for new EKG metrics every ten seconds. There
+          is no limit as loRequestNum, so every request returns all the metrics
+          the node has in this moment of time.
+
+          If null the cardano-tracer default will be used: 1.
+        '';
+      };
+
       environment = mkOption {
-        type = types.enum (attrNames cfg.environments);
+        type = enum (attrNames cfg.environments);
         default = "preview";
         description = ''
           The environment cardano-tracer will connect to.
@@ -160,7 +186,7 @@ in {
       };
 
       environments = mkOption {
-        type = types.attrs;
+        type = attrs;
         default = cfg.cardanoNodePackages.cardanoLib.environments;
         description = ''
           The environments cardano-tracer will possibly utilize.
@@ -168,7 +194,7 @@ in {
       };
 
       eventlog = mkOption {
-        type = types.bool;
+        type = bool;
         default = false;
         description = ''
           Whether to enable eventlog profiling.
@@ -176,7 +202,7 @@ in {
       };
 
       executable = mkOption {
-        type = types.str;
+        type = str;
         default = "exec ${cfg.package}/bin/cardano-tracer";
         defaultText = "cardano-node";
         description = ''
@@ -185,11 +211,66 @@ in {
       };
 
       extraArgs = mkOption {
-        type = types.listOf types.str;
+        type = listOf types.str;
         default = [];
         description = ''
           Extra CLI args for cardano-tracer.
         '';
+      };
+
+      loRequestNum = mkOption {
+        type = nullOr ints.positive;
+        default = null;
+        description = ''
+          This optional attribute specifies the number of log items
+          that will be requested from the node. For example, if loRequestNum is
+          10, cardano-tracer will periodically ask 10 log items in one request.
+          This value is useful for fine-tuning network traffic: it is possible
+          to ask 50 log items in one request, or ask them in 50 requests one at
+          a time. loRequestNum is the maximum number of log items. For example,
+          if cardano-tracer requests 50 log items but the node has only 40 at
+          that moment, these 40 items will be returned, the request won't block
+          to wait for an additional 10 items.
+
+          If null the cardano-tracer default will be used: 100.
+        '';
+      };
+
+      minLogSeverity = mkOption {
+        type = nullOr (enum ["Debug" "Info" "Notice" "Warning" "Error" "Critical" "Alert" "Emergency"]);
+        default = null;
+        description = ''
+          Setting this will cause cardano-tracer to drop log messages less
+          severe than the level declared.
+        '';
+      };
+
+      metricsHelp = mkOption {
+        type = nullOr (attrsOf str);
+        default = null;
+        description = ''
+          Passing metric help annotations to cardano-tracer can be done as a an
+          attribute set of strings from metric name to help text where
+          cardano-tracer's internal metric names have to be used as attribute
+          names.
+
+          If such a set is already available as JSON, this also can be imported:
+
+            services.cardano-tracer.metricsHelp =
+              builtins.fromJSON (builtins.readFile $PATH);
+
+          Any metrics prefix name declared with `TraceOptionMetricsPrefix` in
+          cardano-node config should not be included in the attribute name.
+          Similarly metric type suffixes, such as `.int` or `.real` should also
+          not be included.
+        '';
+        example =
+          {
+            "Mem.resident" = "Kernel-reported RSS (resident set size)";
+            "RTS.gcMajorNum" = "Major GCs";
+            "nodeCannotForge" = "How many times was this node unable to forge [a block]?";
+          }
+        ;
       };
 
       networkMagic = mkOption {
@@ -202,7 +283,7 @@ in {
       };
 
       package = mkOption {
-        type = types.package;
+        type = package;
         default =
           if (cfg.profiling != "none")
           then cfg.cardanoNodePackages.cardano-tracer.passthru.profiled
@@ -218,7 +299,7 @@ in {
       };
 
       profiling = mkOption {
-        type = types.enum [
+        type = enum [
           "none"
           "space"
           "space-bio"
@@ -239,7 +320,7 @@ in {
       };
 
       profilingArgs = mkOption {
-        type = types.listOf types.str;
+        type = listOf str;
         default = let
           commonProfilingArgs =
             ["--machine-readable" "-tcardano-tracer.stats" "-pocardano-tracer"]
@@ -272,7 +353,7 @@ in {
       };
 
       prometheusEnable = mkOption {
-        type = types.bool;
+        type = bool;
         default = true;
         description = ''
           Whether to enable a prometheus export of EKG metrics.
@@ -280,7 +361,7 @@ in {
       };
 
       prometheusHost = mkOption {
-        type = types.str;
+        type = str;
         default = "127.0.0.1";
         description = ''
           The host to bind if prometheus is enabled.
@@ -288,15 +369,25 @@ in {
       };
 
       prometheusPort = mkOption {
-        type = types.port;
+        type = port;
         default = 12798;
         description = ''
           The port to listen on if prometheus is enabled.
         '';
       };
 
+      resourceFreq = mkOption {
+        type = nullOr ints.positive;
+        default = 1000;
+        description = ''
+          The period for tracing resource usage in milliseconds.  The frequency
+          will be 1/resourceFreq times per millisecond.  If null cardano-tracer
+          will not request and display resource usage.
+        '';
+      };
+
       rts_flags_override = mkOption {
-        type = types.listOf types.str;
+        type = listOf str;
         default = [];
         description = ''
           RTS flags override from profile content.
@@ -304,7 +395,7 @@ in {
       };
 
       rtsArgs = mkOption {
-        type = types.listOf types.str;
+        type = listOf str;
         default = [];
         apply = args:
           if (args != [] || cfg.profilingArgs != [] || cfg.rts_flags_override != [])
@@ -316,7 +407,7 @@ in {
       };
 
       rtviewEnable = mkOption {
-        type = types.bool;
+        type = bool;
         default = false;
         description = ''
           Whether to enable an RTView client.
@@ -330,7 +421,7 @@ in {
       };
 
       rtviewHost = mkOption {
-        type = types.str;
+        type = str;
         default = "127.0.0.1";
         description = ''
           The host to bind if RTView is enabled.
@@ -338,13 +429,35 @@ in {
       };
 
       rtviewPort = mkOption {
-        type = types.port;
+        type = port;
         default = 3300;
         description = ''
           The port to listen on if RTView is enabled.
         '';
       };
 
+      stateDir = mkOption {
+        type = nullOr str;
+        default = null;
+        description = ''
+          If specified, RTView saves its state in this directory.
+        '';
+      };
+
+      verbosity = mkOption {
+        type = nullOr (enum ["Minimum" "ErrorsOnly" "Maximum"]);
+        default = null;
+        description = ''
+          The optional attribute specifies the verbosity level for the
+          cardano-tracer itself.  There are 3 levels:
+
+            Minimum - cardano-tracer will work as silently as possible.
+            ErrorsOnly - messages about problems will be shown in standard output.
+            Maximum - all the messages will be shown in standard output. Caution: the number of messages can be huge.
+
+          If null the cardano-tracer default will be used: ErrorsOnly.
+        '';
+      };
       # hostAddr = mkOption {
       #   type = types.str;
       #   default = "127.0.0.1";
@@ -454,6 +567,9 @@ in {
       startLimitIntervalSec = 900;
 
       serviceConfig = {
+        User = "cardano-node";
+        Group = "cardano-node";
+
         LimitNOFILE = "65535";
 
         StateDirectory = "cardano-tracer";
