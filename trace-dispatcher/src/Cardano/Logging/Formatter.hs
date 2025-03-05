@@ -58,10 +58,10 @@ preFormatted ::
   (  LogFormatting a
   ,  MonadIO m)
   => Bool
-  -> HostName
-  -> Trace m (PreFormatted a)
+  -> Trace m PreFormatted
   -> m (Trace m a)
-preFormatted withForHuman hostname tr =
+preFormatted withForHuman tr = do
+  hostname <- liftIO getHostName
   contramapM tr
     (\case
       (lc, Right msg) -> do
@@ -74,8 +74,9 @@ preFormatted withForHuman hostname tr =
             machineFormatted = forMachine details msg
 
         pure (lc, Right (PreFormatted
-                          { pfMessage = msg
-                          , pfForHuman = if withForHuman then condForHuman else Nothing
+                          { -- pfMessage = msg
+                            --, 
+                            pfForHuman = if withForHuman then condForHuman else Nothing
                           , pfForMachine = machineFormatted
                           , pfTimestamp = timeFormatted time
                           , pfTime = time
@@ -88,11 +89,11 @@ preFormatted withForHuman hostname tr =
 
 -- | Format this trace as TraceObject for the trace forwarder
 forwardFormatter'
-  :: forall a m .
+  :: forall m .
      MonadIO m
   => Maybe Text
   -> Trace m FormattedMessage
-  -> Trace m (PreFormatted a)
+  -> Trace m PreFormatted
 forwardFormatter' condPrefix (Trace tr) = Trace $
   contramap
     (\ case
@@ -123,11 +124,11 @@ forwardFormatter' condPrefix (Trace tr) = Trace $
 
 -- | Format this trace as TraceObject for the trace forwarder
 machineFormatter'
-  :: forall a m .
+  :: forall m .
      MonadIO m
   => Maybe Text
   -> Trace m FormattedMessage
-  -> Trace m (PreFormatted a)
+  -> Trace m PreFormatted
 machineFormatter' condPrefix (Trace tr) = Trace $
   contramap
     (\ case
@@ -148,12 +149,12 @@ machineFormatter' condPrefix (Trace tr) = Trace $
 
 -- | Format this trace in human readable style
 humanFormatter'
-  :: forall a m .
+  :: forall m .
      MonadIO m
   => Bool
   -> Maybe Text
   -> Trace m FormattedMessage
-  -> Trace m (PreFormatted a)
+  -> Trace m PreFormatted
 humanFormatter' withColor condPrefix (Trace tr) =
   Trace $
       contramap
@@ -214,6 +215,7 @@ colorBySeverity withColor severity' msg =
     blue = colorize "34"
     colorize c msg' = "\ESC[" <> c <> "m" <> msg' <> "\ESC[0m"
 
+-- TODO: bench against formatting package
 timeFormatted :: UTCTime -> Text
 timeFormatted = pack . formatTime defaultTimeLocale "%F %H:%M:%S%4QZ"
 
@@ -225,10 +227,9 @@ humanFormatter
   -> Maybe Text
   -> Trace m FormattedMessage
   -> m (Trace m a)
-humanFormatter withColor condPrefix tr = do
+humanFormatter withColor condPrefix tr =
     let tr' = humanFormatter' withColor condPrefix tr
-    hostname <- liftIO getHostName
-    preFormatted True hostname tr'
+    in preFormatted True tr'
 
 machineFormatter
   :: forall a m .
@@ -237,10 +238,9 @@ machineFormatter
   => Maybe Text
   -> Trace m FormattedMessage
   -> m (Trace m a)
-machineFormatter condPrefix tr = do
+machineFormatter condPrefix tr =
     let tr' = machineFormatter' condPrefix tr
-    hostname <- liftIO getHostName
-    preFormatted False hostname tr'
+    in preFormatted False tr'
 
 forwardFormatter
   :: forall a m .
@@ -249,7 +249,6 @@ forwardFormatter
   => Maybe Text
   -> Trace m FormattedMessage
   -> m (Trace m a)
-forwardFormatter condPrefix tr = do
+forwardFormatter condPrefix tr =
     let tr' = forwardFormatter' condPrefix tr
-    hostname <- liftIO getHostName
-    preFormatted True hostname tr'
+    in preFormatted True tr'
