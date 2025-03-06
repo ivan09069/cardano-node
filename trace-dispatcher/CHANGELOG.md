@@ -1,5 +1,9 @@
 # Revision history for trace-dispatcher
 
+## 2.9.0 -- Mar 2025
+
+* 
+
 ## 2.8.1 -- Feb 2025
 
 * Updated to `ouroboros-network-framework-0.16`
