@@ -6,14 +6,14 @@
 }:
 with lib;
 with builtins; let
-  inherit (types) attrs attrsOf bool enum ints listOf package port nullOr str;
+  inherit (types) attrs attrsOf bool either enum ints listOf package path port nullOr str;
 
   cfg = config.services.cardano-tracer;
 
   configFile =
     if !isNull cfg.configFile
     then cfg.configFile
-    else toFile "cardano-tracer-config.json" (toJSON tracerConfig);
+    else "/etc/cardano-tracer/config.json";
 
   tracerConfig =
     {
@@ -31,14 +31,19 @@ with builtins; let
         {
           logFormat = "ForHuman";
           logMode = "JournalMode";
-          logRoot = "/tmp/cardano-node-logs";
+          logRoot = cfg.stateDir;
         }
       ];
 
-      network = {
-        contents = "/tmp/forwarder.sock";
-        tag = "AcceptAt";
-      };
+      network =
+        optionalAttrs (!isNull cfg.acceptingSocket) {
+          tag = "AcceptAt";
+          contents = cfg.acceptingSocket;
+        }
+        // optionalAttrs (!isNull cfg.connectToSocket) {
+          tag = "ConnectTo";
+          contents = cfg.connectToSocket;
+        };
 
       rotation = {
         rpFrequencySecs = 15;
@@ -64,7 +69,16 @@ with builtins; let
         epHost = cfg.rtviewHost;
         epPort = cfg.rtviewPort;
       };
-    };
+    }
+    // cfg.extraConfig;
+
+  prettyConfig =
+    (pkgs.runCommandNoCCLocal "cardano-tracer-config.json" {} ''
+      ${getExe pkgs.jq} --sort-keys \
+        < ${toFile "cardano-tracer-unpretty-config.json" (toJSON tracerConfig)} \
+        > $out
+    '')
+    .out;
 
   mkScript = let
     cmd =
@@ -89,8 +103,6 @@ with builtins; let
 
     ${toString cmd}
   '';
-  # runtimeDir = i : if cfg.runtimeDir i == null then cfg.stateDir i else "${cfg.runDirBase}${removePrefix cfg.runDirBase (cfg.runtimeDir i)}";
-  # suffixDir = base: i: "${base}${optionalString (i != 0) "-${toString i}"}";
 in {
   options = {
     services.cardano-tracer = {
@@ -109,6 +121,17 @@ in {
       # Alphabetical nixos module options #
       #                                   #
       #####################################
+
+      acceptingSocket = mkOption {
+        type = nullOr (either str path);
+        default = "${cfg.runtimeDir}/cardano-tracer.socket";
+        description = ''
+          If accepting connections from node(s) to a cardano-tracer socket, the
+          path.
+
+          Either this option, or the connectToSocket option must be declared.
+        '';
+      };
 
       asserts = mkOption {
         type = bool;
@@ -130,12 +153,22 @@ in {
       };
 
       configFile = mkOption {
-        type = nullOr str;
+        type = nullOr (either str path);
         default = null;
         description = ''
           The actual cardano-tracer configuration file. If this option is set
-          to null, a default configuration file will be built based on the nix
-          options.
+          to null, a configuration file will be built based on the nixos
+          options and symlinked to `/etc/cardano-tracer/config.json`.
+        '';
+      };
+
+      connectToSocket = mkOption {
+        type = nullOr (either str path);
+        default = null;
+        description = ''
+          If connecting to a cardano-node socket, the path.
+
+          Either this option, or the acceptingSocket option must be declared.
         '';
       };
 
@@ -211,10 +244,30 @@ in {
       };
 
       extraArgs = mkOption {
-        type = listOf types.str;
+        type = listOf str;
         default = [];
         description = ''
           Extra CLI args for cardano-tracer.
+        '';
+      };
+
+      extraConfig = mkOption {
+        type = attrs;
+        default = {};
+        description = ''
+          Extra configuration attributes for cardano-tracer which will be
+          merged into default cardano-tracer configuration when option
+          `configFile` is null.
+        '';
+      };
+
+      group = mkOption {
+        type = str;
+        default = "cardano-node";
+        description = ''
+          The default group to run the systemd service as.
+
+          This group is assumed to already exist.
         '';
       };
 
@@ -264,13 +317,10 @@ in {
           Similarly metric type suffixes, such as `.int` or `.real` should also
           not be included.
         '';
-        example =
-          {
-            "Mem.resident" = "Kernel-reported RSS (resident set size)";
-            "RTS.gcMajorNum" = "Major GCs";
-            "nodeCannotForge" = "How many times was this node unable to forge [a block]?";
-          }
-        ;
+        example = {
+          "Mem.resident" = "Kernel-reported RSS (resident set size)";
+          "RTS.gcMajorNum" = "Major GCs";
+        };
       };
 
       networkMagic = mkOption {
@@ -380,9 +430,9 @@ in {
         type = nullOr ints.positive;
         default = 1000;
         description = ''
-          The period for tracing resource usage in milliseconds.  The frequency
-          will be 1/resourceFreq times per millisecond.  If null cardano-tracer
-          will not request and display resource usage.
+          The period for tracing cardano-tracer resource usage in milliseconds.
+          The frequency will be 1/resourceFreq times per millisecond.  If null
+          cardano-tracer will not display resource usage.
         '';
       };
 
@@ -402,7 +452,7 @@ in {
           then ["+RTS"] ++ cfg.profilingArgs ++ args ++ cfg.rts_flags_override ++ ["-RTS"]
           else [];
         description = ''
-          Extra CLI args for cardano-node, to be surrounded by "+RTS"/"-RTS"
+          Extra CLI args for cardano-tracer, to be surrounded by "+RTS"/"-RTS"
         '';
       };
 
@@ -436,11 +486,50 @@ in {
         '';
       };
 
-      stateDir = mkOption {
-        type = nullOr str;
-        default = null;
+      runtimeDir = mkOption {
+        type = str;
+        default = "${cfg.runDirBase}cardano-tracer";
         description = ''
-          If specified, RTView saves its state in this directory.
+          The directory to store any cardano-tracer runtime related data.
+
+          If creating a cardano-tracer socket, it will default to this
+          location.
+        '';
+      };
+
+      runDirBase = mkOption {
+        type = str;
+        default = "/run/";
+        description = ''
+          The base runtime directory for cardano-tracer.
+        '';
+      };
+
+      stateDir = mkOption {
+        type = str;
+        default = "${cfg.stateDirBase}cardano-tracer";
+        description = ''
+          The directory to store any cardano-tracer process related data.
+
+          RTView if enabled will save its state in this directory.
+        '';
+      };
+
+      stateDirBase = mkOption {
+        type = str;
+        default = "/var/lib/";
+        description = ''
+          The base state directory for cardano-tracer.
+        '';
+      };
+
+      user = mkOption {
+        type = str;
+        default = "cardano-node";
+        description = ''
+          The default user to run the systemd service as.
+
+          This user is assumed to already exist.
         '';
       };
 
@@ -458,122 +547,34 @@ in {
           If null the cardano-tracer default will be used: ErrorsOnly.
         '';
       };
-      # hostAddr = mkOption {
-      #   type = types.str;
-      #   default = "127.0.0.1";
-      #   description = ''
-      #     The host address to bind to
-      #   '';
-      # };
-
-      # stateDirBase = mkOption {
-      #   type = types.str;
-      #   default = "/var/lib/";
-      #   description = ''
-      #     Base directory to store blockchain data, for each instance.
-      #   '';
-      # };
-
-      # stateDir = mkOption {
-      #   type = funcToOr types.str;
-      #   default = "${cfg.stateDirBase}cardano-node";
-      #   apply = x : if (isFunction x) then x else i: x;
-      #   description = ''
-      #     Directory to store blockchain data, for each instance.
-      #   '';
-      # };
-
-      # runDirBase = mkOption {
-      #   type = types.str;
-      #   default = "/run/";
-      #   description = ''
-      #     Base runtime directory, for each instance.
-      #   '';
-      # };
-
-      # runtimeDir = mkOption {
-      #   type = funcToOr nullOrStr;
-      #   default = i: ''${cfg.runDirBase}${suffixDir "cardano-node" i}'';
-      #   apply = x : if isFunction x then x else if x == null then _: null else "${cfg.runDirBase}${suffixDir "cardano-node" x}";
-      #   description = ''
-      #     Runtime directory relative to ${cfg.runDirBase}, for each instance
-      #   '';
-      # };
-
-      # databasePath = mkOption {
-      #   type = funcToOr types.str;
-      #   default = i : "${cfg.stateDir i}/${cfg.dbPrefix i}";
-      #   apply = x : if isFunction x then x else _ : x;
-      #   description = ''Node database path, for each instance.'';
-      # };
-
-      # socketPath = mkOption {
-      #   type = funcToOr types.str;
-      #   default = i : "${runtimeDir i}/node.socket";
-      #   apply = x : if isFunction x then x else _ : x;
-      #   description = ''Local communication socket path, for each instance.'';
-      # };
-
-      # tracerSocketPathAccept = mkOption {
-      #   type = funcToOr nullOrStr;
-      #   default = null;
-      #   apply = x : if isFunction x then x else _ : x;
-      #   description = ''
-      #     Listen for incoming cardano-tracer connection on a local socket,
-      #     for each instance.
-      #   '';
-      # };
-
-      # tracerSocketPathConnect = mkOption {
-      #   type = funcToOr nullOrStr;
-      #   default = null;
-      #   apply = x : if isFunction x then x else _ : x;
-      #   description = ''
-      #     Connect to cardano-tracer listening on a local socket,
-      #     for each instance.
-      #   '';
-      # };
-
-      # socketGroup = mkOption {
-      #   type = types.str;
-      #   default = "cardano-node";
-      #   description = ''
-      #     systemd socket group owner.
-      #     Note: only applies to sockets created by systemd
-      #     (ie. when `systemdSocketActivation` is turned on).
-      #   '';
-      # };
-
-      # systemdSocketActivation = mkOption {
-      #   type = types.bool;
-      #   default = false;
-      #   description = ''Use systemd socket activation'';
-      # };
     };
   };
 
   config = mkIf cfg.enable {
+    environment.etc."cardano-tracer/config.json".source = mkIf (isNull cfg.configFile) prettyConfig;
+
     systemd.services.cardano-tracer = {
       description = "cardano-tracer service";
       wantedBy = ["multi-user.target"];
 
-      environment.HOME = "/var/lib/cardano-tracer";
+      environment.HOME = cfg.stateDir;
 
       path = [cfg.package];
 
       # Allow up to 10 failures with 30 second restarts in a 15 minute window
-      # before entering failure state and alerting
+      # before entering failure state which may trigger alerts if set up.
       startLimitBurst = 10;
       startLimitIntervalSec = 900;
 
       serviceConfig = {
-        User = "cardano-node";
-        Group = "cardano-node";
+        User = cfg.user;
+        Group = cfg.group;
 
         LimitNOFILE = "65535";
 
-        StateDirectory = "cardano-tracer";
-        WorkingDirectory = "/var/lib/cardano-tracer";
+        WorkingDirectory = cfg.stateDir;
+        StateDirectory = removePrefix cfg.stateDirBase cfg.stateDir;
+        RuntimeDirectory = removePrefix cfg.runDirBase cfg.runtimeDir;
 
         # Ensure quick restarts on any condition
         Restart = "always";
@@ -585,27 +586,14 @@ in {
         });
       };
     };
-  };
 
-  #   systemd.sockets = genInstanceConf (n: i: mkIf cfg.systemdSocketActivation (recursiveUpdate {
-  #     description = "Socket of the ${n} service.";
-  #     wantedBy = [ "sockets.target" ];
-  #     partOf = [ "${n}.service" ];
-  #     socketConfig = {
-  #       ListenStream = [ "${cfg.hostAddr}:${toString (if cfg.shareIpv4port then cfg.port else cfg.port + i)}" ]
-  #         ++ optional (cfg.ipv6HostAddr i != null) "[${cfg.ipv6HostAddr i}]:${toString (if cfg.shareIpv6port then cfg.port else cfg.port + i)}"
-  #         ++ (cfg.additionalListenStream i)
-  #         ++ [(cfg.socketPath i)];
-  #       RuntimeDirectory = removePrefix cfg.runDirBase (cfg.runtimeDir i);
-  #       NoDelay = "yes";
-  #       ReusePort = "yes";
-  #       SocketMode = "0660";
-  #       SocketUser = "cardano-node";
-  #       SocketGroup = cfg.socketGroup;
-  #       FreeBind = "yes";
-  #     };
-  #   } (cfg.extraSocketConfig i)));
-  # }
+    assertions = [
+      {
+        assertion = (!isNull cfg.acceptingSocket) != (!isNull cfg.connectToSocket);
+        message = "Exactly one of acceptingSocket or connectToSocket must be declared";
+      }
+    ];
+  };
 }
 # pkgs:
 # let serviceConfigToJSON =
@@ -624,6 +612,7 @@ in {
 #             contents = cfg.connectToSocket;
 #           } else
 #             throw "cardano-tracer-service:  either acceptingSocket or connectToSocket must be provided.";
+#
 #         logging = [{
 #           inherit (cfg) logRoot;
 #
@@ -636,6 +625,7 @@ in {
 #           rpLogLimitBytes = 1000000000;
 #           rpMaxAgeHours   = 24;
 #         } // (cfg.rotation or {});
+#
 #
 #         hasEKG = {
 #           epHost  = "127.0.0.1";
