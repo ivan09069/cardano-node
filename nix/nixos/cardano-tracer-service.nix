@@ -6,7 +6,7 @@
 }:
 with lib;
 with builtins; let
-  inherit (types) attrs attrsOf bool either enum ints listOf package path port nullOr str;
+  inherit (types) attrs attrsOf bool either enum ints listOf package path port nullOr str submodule;
 
   cfg = config.services.cardano-tracer;
 
@@ -21,19 +21,13 @@ with builtins; let
         (cfg)
         ekgRequestFreq
         loRequestNum
+        logging
+        metricsComp
         metricsHelp
         networkMagic
         resourceFreq
         verbosity
         ;
-
-      logging = [
-        {
-          logFormat = "ForHuman";
-          logMode = "JournalMode";
-          logRoot = cfg.stateDir;
-        }
-      ];
 
       network =
         optionalAttrs (!isNull cfg.acceptingSocket) {
@@ -45,12 +39,23 @@ with builtins; let
           contents = cfg.connectToSocket;
         };
 
-      rotation = {
-        rpFrequencySecs = 15;
-        rpKeepFilesNum = 10;
-        rpLogLimitBytes = 1000000000;
-        rpMaxAgeHours = 24;
-      };
+      rotation =
+        {
+          inherit
+            (cfg.rotation)
+            rpFrequencySecs
+            rpKeepFilesNum
+            rpLogLimitBytes
+            ;
+        }
+        // optionalAttrs (!isNull cfg.rotation.rpMaxAgeHours) {
+          inherit (cfg.rotation) rpMaxAgeHours;
+        }
+        // optionalAttrs (!isNull cfg.rotation.rpMaxAgeMinutes) {
+          inherit (cfg.rotation) rpMaxAgeMinutes;
+        };
+
+      WarnRTViewMissing = cfg.warnRtviewMissing;
     }
     // optionalAttrs cfg.ekgEnable {
       hasEKG = {
@@ -206,7 +211,7 @@ in {
           is no limit as loRequestNum, so every request returns all the metrics
           the node has in this moment of time.
 
-          If null the cardano-tracer default will be used: 1.
+          If null cardano-tracer will set a default: 1.
         '';
       };
 
@@ -271,6 +276,58 @@ in {
         '';
       };
 
+      # Consider adding hasForwarding config once more documentation is
+      # available on the feature. Ex:
+      #
+      # hasForwarding = {...};
+
+      logging = mkOption {
+        type = listOf (submodule {
+          options = {
+            logFormat = mkOption {
+              type = enum ["ForHuman" "ForMachine"];
+              default = "ForHuman";
+              description = ''
+                The logFormat option specifies the format of logs. There are two
+                possible modes: `ForMachine` and `ForHuman`. ForMachine is for JSON
+                format, ForHuman is for human-friendly text format. Since the logging
+                option accepts a list more than one logging section can be declared.
+              '';
+            };
+
+            logMode = mkOption {
+              type = enum ["FileMode" "JournalMode"];
+              default = "JournalMode";
+              description = ''
+                The logMode option specifies logging mode. There are two possible
+                modes: `FileMode` and `JournalMode`. FileMode is for storing logs to
+                the files, JournalMode is for storing them in systemd's journal. If
+                you choose JournalMode, the logRoot option, will be ignored.
+              '';
+            };
+
+            logRoot = mkOption {
+              type = str;
+              default = cfg.stateDir;
+              description = ''
+                The logRoot option specifies the path to the root directory. This
+                directory will contain all the subdirectories with the log files
+                inside. Remember that each subdirectory corresponds to the particular
+                node. If the root directory does not exist, it will be created.
+              '';
+            };
+          };
+        });
+        default = [{}];
+        description = ''
+          The logging option describes the logging operation of cardano-tracer
+          and is a list of a submodule of which each contains a `logFormat`,
+          `logMode` and `logRoot`.
+
+          See the descriptions for each available submodule option.
+        '';
+      };
+
       loRequestNum = mkOption {
         type = nullOr ints.positive;
         default = null;
@@ -285,7 +342,7 @@ in {
           that moment, these 40 items will be returned, the request won't block
           to wait for an additional 10 items.
 
-          If null the cardano-tracer default will be used: 100.
+          If null cardano-tracer will set a default: 100.
         '';
       };
 
@@ -296,6 +353,33 @@ in {
           Setting this will cause cardano-tracer to drop log messages less
           severe than the level declared.
         '';
+      };
+
+      metricsComp = mkOption {
+        type = nullOr (attrsOf str);
+        default = null;
+        description = ''
+          Passing metric compatability mapping to cardano-tracer can be done as
+          a an attribute set of strings from metric name to mapped metric names
+          where cardano-tracer's internal metric names have to be used as
+          attribute names.  The metrics are then available with both the
+          original name and mapped name.  Only one mapping per message is
+          supported.
+
+          If such a set is already available as JSON, this also can be imported:
+
+            services.cardano-tracer.metricsComp =
+              builtins.fromJSON (builtins.readFile $PATH);
+
+          Any metrics prefix name declared with `TraceOptionMetricsPrefix` in
+          cardano-node config should not be included in the attribute name.
+          Similarly metric type suffixes, such as `.int` or `.real` should also
+          not be included.
+        '';
+        example = {
+          "Mempool.TxsInMempool" = "Mempool.TxsInMempool.Mapped";
+          "ChainDB.SlotNum" = "ChainDB.SlotNum.Mapped";
+        };
       };
 
       metricsHelp = mkOption {
@@ -436,6 +520,92 @@ in {
         '';
       };
 
+      rotation = mkOption {
+        type = nullOr (submodule ({config, ...}: {
+          options = {
+            rpFrequencySecs = mkOption {
+              type = ints.positive;
+              description = ''
+                The rpFrequencySecs option specifies rotation period, in
+                seconds.
+              '';
+            };
+
+            rpKeepFilesNum = mkOption {
+              type = ints.positive;
+              description = ''
+                The rpKeepFilesNum option specifies the number of the log
+                files that will be kept.  The last (newest) log files will
+                always be the ones kept, whereas the first (oldest) log files
+                will be purged.
+              '';
+            };
+
+            rpLogLimitBytes = mkOption {
+              type = ints.positive;
+              description = ''
+                The rpLogLimitBytes option specifies the maximum size of the
+                log file, in bytes. Once the size of the current log file
+                reaches this value, a new log file will be created.
+              '';
+            };
+
+            rpMaxAgeMinutes = mkOption {
+              type = nullOr ints.positive;
+              default = null;
+              apply = v:
+                warnIf (!isNull v && !isNull config.rpMaxAgeHours) ''
+                  In services.cardano-tracer.rotation both rpMaxAgeMinutes and rpMaxAgeHours
+                  have been declared.  The latter will be ignored.
+                ''
+                v;
+              description = ''
+                The rpMaxAgeMinutes option specifies the lifetime of the log
+                file in minutes. Once the log file reaches this value, it is
+                treated as outdated and will be deleted.  Please note that N
+                last log files, specified by option rpKeepFilesNum, will be
+                kept even if they are outdated. If the rpMaxAgeHours option is
+                also declared this option takes precedence.
+              '';
+            };
+
+            rpMaxAgeHours = mkOption {
+              type = nullOr ints.positive;
+              default = null;
+              apply = v:
+                throwIf (isNull v && isNull config.rpMaxAgeMinutes) ''
+                  In services.cardano-tracer.rotation at least one of
+                  rpMaxAgeMinutes and rpMaxAgeHours must be declared.
+                ''
+                v;
+              description = ''
+                The rpMaxAgeHours option specifies the lifetime of the log
+                file in hours. Once the log file reaches this value, it is
+                treated as outdated and will be deleted.  Please note that N
+                last log files, specified by option rpKeepFilesNum, will be
+                kept even if they are outdated. If the rpMaxAgeMinutes option
+                is also declared then it takes precedence.
+              '';
+            };
+          };
+        }));
+        default = null;
+        description = ''
+          The rotation option describes the log rotation operation of
+          cardano-tracer and is either null or a submodule with options of
+          `rpFrequencySecs`, `rpKeepFilesNum`, `rpLogLimitBytes`,
+          `rpMaxAgeMinutes`.
+
+          Please note that if you skip this field, all log items will be stored
+          in a single file, and usually that's not what is desired.
+
+          This option will be ignored if all logging has `logMode` configured
+          as `JournalMode`.
+
+          See the descriptions for each available submodule option.
+        '';
+      };
+
       rts_flags_override = mkOption {
         type = listOf str;
         default = [];
@@ -544,7 +714,20 @@ in {
             ErrorsOnly - messages about problems will be shown in standard output.
             Maximum - all the messages will be shown in standard output. Caution: the number of messages can be huge.
 
-          If null the cardano-tracer default will be used: ErrorsOnly.
+          If null cardano-tracer will set a default: ErrorsOnly.
+        '';
+      };
+
+      warnRtviewMissing = mkOption {
+        type = nullOr bool;
+        default = null;
+        description = ''
+          Whether to provide a warning if RTView is requested in config but
+          cardano-tracer was built without it.
+
+          If null cardano-tracer will set a default: true if RTView
+          config is provided but cardano-tracer was built without it, false
+          otherwise.
         '';
       };
     };
@@ -556,6 +739,16 @@ in {
     systemd.services.cardano-tracer = {
       description = "cardano-tracer service";
       wantedBy = ["multi-user.target"];
+
+      # If cardano-tracer implements SIGHUP config reload support in the
+      # future, this can be changed to reloadTriggers.
+      restartTriggers = [
+        (
+          if isNull cfg.configFile
+          then prettyConfig
+          else configFile
+        )
+      ];
 
       environment.HOME = cfg.stateDir;
 
@@ -595,110 +788,3 @@ in {
     ];
   };
 }
-# pkgs:
-# let serviceConfigToJSON =
-#       cfg:
-#       {
-#         inherit (cfg) networkMagic resourceFreq metricsHelp;
-#         # loRequestNum = 100;
-#         network =
-#           if        cfg.acceptingSocket != null
-#           then {
-#             tag      = "AcceptAt";
-#             contents = cfg.acceptingSocket;
-#           } else if cfg.connectToSocket != null
-#           then {
-#             tag      = "ConnectTo";
-#             contents = cfg.connectToSocket;
-#           } else
-#             throw "cardano-tracer-service:  either acceptingSocket or connectToSocket must be provided.";
-#
-#         logging = [{
-#           inherit (cfg) logRoot;
-#
-#           logMode   = "FileMode";
-#           logFormat = "ForMachine";
-#         }];
-#         rotation = {
-#           rpFrequencySecs = 15;
-#           rpKeepFilesNum  = 10;
-#           rpLogLimitBytes = 1000000000;
-#           rpMaxAgeHours   = 24;
-#         } // (cfg.rotation or {});
-#
-#
-#         hasEKG = {
-#           epHost  = "127.0.0.1";
-#           epPort  = cfg.ekgPortBase;
-#         };
-#         ekgRequestFreq = 1;
-#         hasPrometheus = {
-#           epHost    = "127.0.0.1";
-#           epPort    = 3200; ## supervisord.portShiftPrometheus
-#         } // (cfg.prometheus or {});
-#         # Just an example for metrics compatibility mapping.
-#         # An entry means the first entry has the second entry as alias.
-#         # The Metrics is then avalable, both with the original and the mapped name.
-#         # Only one mapping per message is supported.
-#         # metricsComp = {
-#         #     "Mempool.TxsInMempool" = "Mempool.TxsInMempool.Mapped";
-#         #     "ChainDB.SlotNum" = "ChainDB.SlotNum.Mapped";
-#         # };
-#       } // pkgs.optionalAttrs ((cfg.RTView or {}) != {})
-#       {
-#         hasRTView = cfg.RTView;
-#       };
-# in pkgs.commondefServiceModule
-#   (lib: with lib;
-#     { svcName = "cardano-tracer";
-#       svcDesc = "Cardano trace processor";
-#
-#       svcPackageSelector =
-#         pkgs: ## Local:
-#               pkgs.cardanoNodePackages.cardano-tracer
-#               ## Imported by another repo, that adds an overlay:
-#                 or pkgs.cardano-tracer;
-#               ## TODO:  that's actually a bit ugly and could be improved.
-#       ## This exe has to be available in the selected package.
-#       exeName = "cardano-tracer";
-#
-#       extraOptionDecls = {
-#         ### You can actually change those!
-#         networkMagic    = opt    int 764824073 "Network magic (764824073 for Cardano mainnet).";
-#         acceptingSocket = mayOpt str           "Socket path: as acceptor.";
-#         connectToSocket = mayOpt str           "Socket path: connect to.";
-#         logRoot         = opt    str null      "Log storage root directory.";
-#         rotation        = opt    attrs {}      "Log rotation overrides: see cardano-tracer documentation.";
-#         RTView          = opt    attrs {}      "RTView config overrides: see cardano-tracer documentation.";
-#         ekgPortBase     = opt    int 3100      "EKG port base.";
-#         ekgRequestFreq  = opt    int 1         "EKG request frequency";
-#         prometheus      = opt    attrs {}      "Prometheus overrides: see cardano-tracer documentation.";
-#         resourceFreq    = mayOpt int           "Frequency (1/ms) for tracing resource usage.";
-#         metricsHelp     = mayOpt str           "JSON file containing metrics help annotations for Prometheus";
-#
-#         ### Here be dragons, on the other hand..
-#         configFile      = mayOpt str
-#           "Config file path override -- only set if you know what you're doing. Shudder. Your 'eminence'..";
-#         configJSONfn    = opt (functionTo attrs) serviceConfigToJSON
-#           "This is NOT meant to be overridden, at all -- we only expose it so it's externally accessible.";
-#       };
-#
-#       configExeArgsFn = cfg: [
-#         "--config" (if cfg.configFile != null then cfg.configFile
-#                     else "${pkgs.writeText "cardano-tracer-config.json"
-#                                            (__toJSON (serviceConfigToJSON cfg))}")
-#         ];
-#
-#       configSystemdExtraConfig = _: {};
-#
-#       configSystemdExtraServiceConfig =
-#         cfg: with cfg; {
-#           Type = "exec";
-#           User = "cardano-node";
-#           Group = "cardano-node";
-#           Restart = "always";
-#           # RuntimeDirectory = localNodeConf.runtimeDir;
-#           # WorkingDirectory = localNodeConf.stateDir;
-#         };
-#     })
-
